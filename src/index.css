@@ -1,0 +1,36 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html {
+  scroll-behavior: smooth;
+}
+
+:root {
+  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+}
+
+body {
+  margin: 0;
+  display: flex;
+  place-content: center;
+  min-width: 320px;
+  min-height: 100vh;
+  background-color: #000;
+  color: white;
+}
+
+#root {
+  width: 100%;
+}
+
+@layer utilities {
+  .skip-to-content {
+    @apply absolute -top-full left-0 bg-wrestling-red text-white p-4 z-[100] transition-[top] focus:top-0 focus:outline-none focus:ring-2 focus:ring-white;
+  }
+
+  .sr-only {
+    @apply absolute w-1 h-1 p-0 -m-1 overflow-hidden whitespace-nowrap border-0;
+    clip: rect(0, 0, 0, 0);
+  }
+}
