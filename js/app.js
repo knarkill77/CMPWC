@@ -84,6 +84,41 @@
     </div>`;
   }
 
+  // Structured contact (name / relationship / phone) inputs for a form.
+  function contactFieldsHTML(label, keys, d) {
+    return `<div class="field full"><label>${label}</label>
+      <div class="contact-grid">
+        <input name="${keys.name}" placeholder="Name" value="${esc(d[keys.name] || "")}">
+        <input name="${keys.rel}" placeholder="Relationship" value="${esc(d[keys.rel] || "")}">
+        <input name="${keys.phone}" placeholder="Phone" value="${esc(d[keys.phone] || "")}">
+      </div></div>`;
+  }
+  // Read-only one-line rendering of a structured contact.
+  function contactDisplay(name, rel, phone) {
+    if (!name && !rel && !phone) return "—";
+    return `${esc(name || "")}${rel ? ` <span class="muted">(${esc(rel)})</span>` : ""}${phone ? ` — ${esc(phone)}` : ""}`;
+  }
+  // "Jun 15 – Jun 19"
+  function fmtRange(s, e) {
+    if (!s || !e) return "";
+    const o = { month: "short", day: "numeric" };
+    return new Date(s + "T00:00:00").toLocaleDateString(undefined, o) + " – " + new Date(e + "T00:00:00").toLocaleDateString(undefined, o);
+  }
+  // Top/Middle/Bottom bed chooser for a bunk; `onpick` is an App.* fn name.
+  function bedPickerHTML(bunk, chosen, onpick) {
+    const avail = D.availableBeds(bunk.id);
+    return `<div class="card bed-card">
+      <h4 style="margin:0 0 10px;">Choose a bed in Bunk ${esc(bunk.name)} <span class="muted">(top / middle / bottom)</span></h4>
+      <div class="bed-opts">
+        ${D.BED_POSITIONS.slice().reverse().map((pos) => {
+          const taken = !avail.includes(pos);
+          const sel = chosen === pos;
+          return `<button type="button" class="bed-opt ${sel ? "sel" : ""} ${taken ? "taken" : ""}" ${taken ? "disabled" : `onclick="${onpick}('${pos}')"`}>${pos}${taken ? " · taken" : ""}</button>`;
+        }).join("")}
+      </div>
+    </div>`;
+  }
+
   function toast(msg, kind) {
     const host = document.getElementById("toastHost");
     const el = document.createElement("div");
@@ -194,30 +229,22 @@
     view().innerHTML = bunkMapHTML({ onClickRoute: true });
   };
 
-  // options.selectId -> radio-style selection; options.onClickRoute -> open bunk detail
+  // Three bunkhouses side by side (Girls is half-width, on the left). No gym.
   function bunkMapHTML(options) {
     options = options || {};
     const st = D.getState();
     const sidesHTML = st.config.sides.map((side) => {
       const bunks = D.bunksForSide(side.id);
-      return `<div class="map-side">
+      return `<div class="map-side" style="flex:${side.bunkCount || bunks.length || 1};">
         <h3><span class="side-dot" style="background:${side.color}"></span> ${esc(side.name)}</h3>
         <div class="bunk-grid">
           ${bunks.map((b) => bunkCellHTML(b, options)).join("")}
         </div>
       </div>`;
-    });
-    return `<div class="map-wrap">
-      ${sidesHTML[0]}
-      <div class="gym">
-        <div class="gym-icon">🤼</div>
-        <div>WRESTLING GYM</div>
-        <small>Mats &amp; training center</small>
-      </div>
-      ${sidesHTML[1]}
-    </div>
+    }).join("");
+    return `<div class="map-wrap">${sidesHTML}</div>
     <p class="muted" style="margin-top:14px;font-size:13px;">
-      ● ${options.selectMode ? "Click an open bunk to assign this camper." : "Click a bunk to view its cabin, campers, and logs."}
+      ● ${options.selectMode ? "Click an open bunk, then pick a bed. Full bunks show a 🔒." : "Click a bunk to view its cabin, campers, and logs."}
       &nbsp; <span class="badge">3 beds each</span></p>`;
   }
 
@@ -225,9 +252,10 @@
     const occ = D.bunkOccupancy(b.id);
     const full = occ >= b.capacity;
     const campers = D.campersInBunk(b.id);
-    const hasAlert =
+    // Medical/incident alert flag only on the admin map (not the parent select view).
+    const hasAlert = !options.selectMode && (
       b.logs.some((l) => !l.resolved && (l.type === "incident" || l.type === "injury")) ||
-      campers.some((c) => c.logs.some((l) => !l.resolved && (l.type === "injury" || l.type === "incident" || l.type === "allergy")));
+      campers.some((c) => c.logs.some((l) => !l.resolved && (l.type === "injury" || l.type === "incident" || l.type === "behavior" || l.type === "allergy"))));
     const pips = Array.from({ length: b.capacity })
       .map((_, i) => `<span class="pip ${i < occ ? "filled" : ""}"></span>`).join("");
     const cls = [
@@ -244,6 +272,7 @@
       onclick = `navigate('bunk/${b.id}')`;
     }
     return `<div class="${cls}" ${onclick ? `onclick="${onclick}"` : ""} ${full && options.selectMode ? 'title="Full"' : ""}>
+      ${full ? `<span class="bunk-lock" title="Full">🔒</span>` : ""}
       <div class="bunk-name">${esc(b.name)}</div>
       <div class="occ">${occ}/${b.capacity}</div>
       <div class="pips">${pips}</div>
@@ -346,11 +375,12 @@
             <div class="field"><label>First name *</label><input name="firstName" required value="${esc(d.firstName || "")}"></div>
             <div class="field"><label>Last name *</label><input name="lastName" required value="${esc(d.lastName || "")}"></div>
             <div class="field"><label>Age</label><input name="age" type="number" min="3" max="18" value="${esc(d.age || "")}"></div>
-            <div class="field"><label>Grade</label><input name="grade" value="${esc(d.grade || "")}"></div>
+            <div class="field"><label>Grade</label>
+              <select name="grade">${selOpts([""].concat(D.GRADES), d.grade)}</select></div>
             <div class="field"><label>Gender</label>
               <select name="gender">${selOpts(["", "Female", "Male", "Non-binary", "Prefer not to say"], d.gender)}</select></div>
             <div class="field"><label>T-shirt size</label>
-              <select name="shirtSize">${selOpts(["", "YXS", "YS", "YM", "YL", "AS", "AM", "AL", "AXL"], d.shirtSize)}</select></div>
+              <select name="shirtSize">${selOpts([""].concat(D.SHIRT_SIZES), d.shirtSize)}</select></div>
             <div class="field full"><label>Home address</label><input name="address" value="${esc(d.address || "")}"></div>
             <div class="field"><label>Opening balance ($)</label><input name="balance" type="number" min="0" step="1" value="${esc(d.balance || 0)}"></div>
           </div>
@@ -370,9 +400,9 @@
 
           <h4 class="section-title">Emergency & Pickup</h4>
           <div class="form-grid">
-            <div class="field full"><label>Emergency contact #1</label><input name="emergencyContact" placeholder="Name — relationship — phone" value="${esc(d.emergencyContact || "")}"></div>
-            <div class="field full"><label>Emergency contact #2</label><input name="emergencyContact2" placeholder="Name — relationship — phone" value="${esc(d.emergencyContact2 || "")}"></div>
-            <div class="field full"><label>Authorized for pickup</label><input name="authorizedPickup" placeholder="People allowed to pick up this camper" value="${esc(d.authorizedPickup || "")}"></div>
+            ${contactFieldsHTML("Emergency contact #1", { name: "emergencyName", rel: "emergencyRel", phone: "emergencyPhone" }, d)}
+            ${contactFieldsHTML("Emergency contact #2", { name: "emergency2Name", rel: "emergency2Rel", phone: "emergency2Phone" }, d)}
+            ${contactFieldsHTML("Authorized for pickup", { name: "pickupName", rel: "pickupRel", phone: "pickupPhone" }, d)}
           </div>
 
           <h4 class="section-title">Medical & Health</h4>
@@ -383,8 +413,6 @@
             <div class="field full"><label>Medications (name, dose, schedule)</label><input name="medications" value="${esc(d.medications || "")}"></div>
             <div class="field"><label>Physician (name & phone)</label><input name="physician" value="${esc(d.physician || "")}"></div>
             <div class="field"><label>Insurance (provider & policy #)</label><input name="insurance" value="${esc(d.insurance || "")}"></div>
-            <div class="field"><label>Swim level</label>
-              <select name="swimLevel">${selOpts(["", "Non-swimmer", "Beginner", "Intermediate", "Swimmer"], d.swimLevel)}</select></div>
             <div class="field"><label>Photo/media consent</label>
               <select name="photoConsent">${selOpts(["", "Yes", "No"], d.photoConsent)}</select></div>
             <div class="field full"><label>Notes</label><textarea name="notes">${esc(d.notes || "")}</textarea></div>
@@ -405,28 +433,29 @@
 
   function renderRegStep2() {
     titleEl().textContent = "Register Camper";
+    const bunk = regDraft.bunkId ? D.getBunk(regDraft.bunkId) : null;
     view().innerHTML = `
       <div class="card" style="margin-bottom:16px;">
-        <h3 style="margin:0;">Step 2 of 2 — Choose a Bunk for ${esc(regDraft.firstName)} ${esc(regDraft.lastName)}</h3>
-        <p class="muted" style="margin:6px 0 0;">Pick an open bunk on the map. West and East sides flank the gym.</p>
+        <h3 style="margin:0;">Step 2 of 2 — Choose a Bunk &amp; Bed for ${esc(regDraft.firstName)} ${esc(regDraft.lastName)}</h3>
+        <p class="muted" style="margin:6px 0 0;">Pick an open bunk, then choose a bed. Girls, West, and East bunkhouses.</p>
       </div>
       <div id="mapHost">${bunkMapHTML({ selectMode: true, selectedBunk: regDraft.bunkId })}</div>
+      <div id="regBedHost">${bunk ? bedPickerHTML(bunk, regDraft.bed, "App.regPickBed") : ""}</div>
       <div class="form-actions" style="max-width:none;">
         <button class="btn btn-secondary" onclick="App.regBack()">← Back</button>
-        <button class="btn btn-accent" id="finishReg" ${regDraft.bunkId ? "" : "disabled"}>Complete Registration</button>
+        <button class="btn btn-accent" id="finishReg" ${regDraft.bunkId && regDraft.bed ? "" : "disabled"}>Complete Registration</button>
       </div>`;
     const fin = document.getElementById("finishReg");
     fin.addEventListener("click", finishRegistration);
   }
 
   function selectBunk(bunkId) {
-    regDraft.bunkId = bunkId;
     const b = D.getBunk(bunkId);
+    regDraft.bunkId = bunkId;
     regDraft.sideId = b.sideId;
-    document.getElementById("mapHost").innerHTML = bunkMapHTML({ selectMode: true, selectedBunk: bunkId });
-    const fin = document.getElementById("finishReg");
-    if (fin) fin.disabled = false;
-    toast(`Bunk ${b.name} selected`, "success");
+    regDraft.bed = "";          // reset bed when bunk changes
+    renderRegStep2();           // re-render so the bed picker appears
+    toast(`Bunk ${b.name} selected — pick a bed`, "success");
   }
 
   function finishRegistration() {
@@ -437,12 +466,27 @@
   }
 
   /* ============================================================
-     CAMPERS LIST
+     CAMPERS LIST (admin) — sortable, with a flags/incidents column
      ============================================================ */
+  let camperSort = { key: "name", dir: 1 };
+  let camperDraw = null;
+
+  // Natural bunk ordering: side order (Girls, West, East) then bunk number.
+  function bunkSortKey(c) {
+    const sideOrder = D.getState().config.sides.map((s) => s.id);
+    const si = sideOrder.indexOf(c.sideId);
+    const bunk = D.getBunk(c.bunkId);
+    const num = bunk ? parseInt(bunk.name.replace(/\D/g, ""), 10) || 0 : 0;
+    return [si < 0 ? 99 : si, num];
+  }
+
   routes.campers = function () {
     titleEl().textContent = "Campers";
     actionsEl().innerHTML = `<button class="btn btn-accent" onclick="navigate('register')">+ Register Camper</button>`;
     const st = D.getState();
+
+    const arrow = (key) => camperSort.key === key ? (camperSort.dir > 0 ? " ▲" : " ▼") : "";
+    const th = (key, label, cls) => `<th class="${cls || ""} sortable" onclick="App.sortCampers('${key}')">${label}${arrow(key)}</th>`;
 
     view().innerHTML = `
       <div class="toolbar">
@@ -453,52 +497,71 @@
         </select>
         <select id="flagFilter">
           <option value="">All campers</option>
-          <option value="medical">Medical / allergy flags</option>
+          <option value="flags">Any flag / incident</option>
+          <option value="incident">Open incidents</option>
+          <option value="behavior">Behavior incidents</option>
+          <option value="medical">Medical / allergy</option>
           <option value="low">Low balance (&lt;$5)</option>
         </select>
         <div class="spacer"></div>
+        <span class="muted" style="font-size:13px;">Click a column to sort</span>
       </div>
       <div class="card" style="padding:0;overflow:hidden;">
         <table class="table">
           <thead><tr>
-            <th>Camper</th><th>Age</th><th>Side</th><th>Bunk</th><th>Flags</th><th class="num">Balance</th>
+            ${th("name", "Camper")}${th("age", "Age")}${th("side", "Side")}${th("bunk", "Bunk / Bed")}
+            <th>Flags &amp; Incidents</th>${th("balance", "Balance", "num")}
           </tr></thead>
           <tbody id="camperRows"></tbody>
         </table>
       </div>`;
 
-    function draw() {
+    camperDraw = function () {
       const q = (document.getElementById("camperSearch").value || "").toLowerCase();
       const side = document.getElementById("sideFilter").value;
       const flag = document.getElementById("flagFilter").value;
       let list = D.getState().campers.slice();
       if (q) list = list.filter((c) => fullName(c).toLowerCase().includes(q));
       if (side) list = list.filter((c) => c.sideId === side);
+      if (flag === "flags") list = list.filter((c) => D.camperFlags(c).length);
+      if (flag === "incident") list = list.filter((c) => c.logs.some((l) => !l.resolved && (l.type === "injury" || l.type === "incident")));
+      if (flag === "behavior") list = list.filter((c) => c.logs.some((l) => !l.resolved && l.type === "behavior"));
       if (flag === "medical") list = list.filter((c) => (c.allergies && c.allergies.trim()) || (c.medicalNeeds && c.medicalNeeds.trim()));
       if (flag === "low") list = list.filter((c) => c.balance < 5);
-      list.sort((a, b) => fullName(a).localeCompare(fullName(b)));
+
+      const dir = camperSort.dir;
+      const sorters = {
+        name: (a, b) => fullName(a).localeCompare(fullName(b)),
+        age: (a, b) => (Number(a.age) || 0) - (Number(b.age) || 0),
+        side: (a, b) => { const ka = bunkSortKey(a), kb = bunkSortKey(b); return ka[0] - kb[0] || ka[1] - kb[1]; },
+        bunk: (a, b) => { const ka = bunkSortKey(a), kb = bunkSortKey(b); return ka[0] - kb[0] || ka[1] - kb[1]; },
+        balance: (a, b) => a.balance - b.balance,
+      };
+      list.sort((a, b) => (sorters[camperSort.key] || sorters.name)(a, b) * dir || fullName(a).localeCompare(fullName(b)));
 
       const rows = document.getElementById("camperRows");
       if (!list.length) { rows.innerHTML = `<tr><td colspan="6"><p class="empty">No campers match.</p></td></tr>`; return; }
       rows.innerHTML = list.map((c) => {
         const bunk = D.getBunk(c.bunkId);
         const side = D.getSide(c.sideId);
-        const flags = [c.allergies ? "🥜" : "", c.medicalNeeds ? "🏥" : "",
-          c.logs.some((l) => !l.resolved && (l.type === "injury" || l.type === "incident")) ? "⚠️" : ""].filter(Boolean).join(" ");
+        const flags = D.camperFlags(c);
+        const flagHTML = flags.length
+          ? flags.map((f) => `<span class="flag-chip flag-${f.kind}" title="${esc(f.label)}">${f.icon} ${esc(f.label)}</span>`).join(" ")
+          : `<span class="muted">—</span>`;
         return `<tr onclick="navigate('camper/${c.id}')">
           <td>${avatarHTML(c, 28, true)}${esc(fullName(c))}</td>
           <td>${esc(c.age)}</td>
           <td>${side ? `<span class="badge side-${side.id}">${esc(side.name)}</span>` : "—"}</td>
-          <td>${bunk ? esc(bunk.name) : "—"}</td>
-          <td>${flags || "—"}</td>
+          <td>${bunk ? esc(bunk.name) : "—"}${c.bed ? ` <span class="muted">· ${esc(c.bed)}</span>` : ""}</td>
+          <td>${flagHTML}</td>
           <td class="num">${money(c.balance)}</td>
         </tr>`;
       }).join("");
-    }
+    };
 
     ["camperSearch", "sideFilter", "flagFilter"].forEach((id) =>
-      document.getElementById(id).addEventListener("input", draw));
-    draw();
+      document.getElementById(id).addEventListener("input", camperDraw));
+    camperDraw();
   };
 
   /* ============================================================
@@ -522,16 +585,18 @@
             <div>
               <h2>${esc(fullName(c))}</h2>
               <div class="detail-meta">
-                Age ${esc(c.age || "—")}${c.grade ? ` · Grade ${esc(c.grade)}` : ""} ·
+                Age ${esc(c.age || "—")}${c.grade ? ` · ${esc(c.grade)}` : ""} ·
                 ${side ? `<span class="badge side-${side.id}">${esc(side.name)}</span>` : ""}
-                ${bunk ? `Bunk <a href="#bunk/${bunk.id}">${esc(bunk.name)}</a>` : `<span class="muted">No bunk</span>`}
+                ${bunk ? `Bunk <a href="#bunk/${bunk.id}">${esc(bunk.name)}</a>${c.bed ? ` · ${esc(c.bed)} bed` : ""}` : `<span class="muted">No bunk</span>`}
               </div>
             </div>
           </div>
           <dl class="kv" style="margin-top:14px;">
+            <dt>Camp</dt><dd>${esc(c.campName) || "—"}${c.campFee ? ` <span class="badge">${money(c.campFee)}</span>` : ""}</dd>
             <dt>Attendance</dt><dd>${c.startDate && c.endDate
               ? `${esc(c.startDate)} → ${esc(c.endDate)} <span class="badge">${D.camperDuration(c)} days</span>`
               : "—"}</dd>
+            <dt>Bunk / Bed</dt><dd>${bunk ? `${esc(bunk.name)}${c.bed ? ` · ${esc(c.bed)}` : ""}` : "—"}</dd>
             <dt>Gender</dt><dd>${esc(c.gender) || "—"}</dd>
             <dt>Shirt size</dt><dd>${esc(c.shirtSize) || "—"}</dd>
             <dt>Address</dt><dd>${esc(c.address) || "—"}</dd>
@@ -539,16 +604,15 @@
             <dt>Guardian</dt><dd>${esc(c.guardianName) || "—"}${c.guardianRelationship ? ` (${esc(c.guardianRelationship)})` : ""}</dd>
             <dt>Guardian phone</dt><dd>${esc(c.guardianPhone) || "—"}</dd>
             <dt>Guardian email</dt><dd>${esc(c.guardianEmail) || "—"}</dd>
-            <dt>Emergency #1</dt><dd>${esc(c.emergencyContact) || "—"}</dd>
-            <dt>Emergency #2</dt><dd>${esc(c.emergencyContact2) || "—"}</dd>
-            <dt>Authorized pickup</dt><dd>${esc(c.authorizedPickup) || "—"}</dd>
+            <dt>Emergency #1</dt><dd>${contactDisplay(c.emergencyName, c.emergencyRel, c.emergencyPhone)}</dd>
+            <dt>Emergency #2</dt><dd>${contactDisplay(c.emergency2Name, c.emergency2Rel, c.emergency2Phone)}</dd>
+            <dt>Authorized pickup</dt><dd>${contactDisplay(c.pickupName, c.pickupRel, c.pickupPhone)}</dd>
             <dt>Allergies</dt><dd>${c.allergies ? `<span class="badge high">🥜 ${esc(c.allergies)}</span>` : "—"}</dd>
             <dt>Medical needs</dt><dd>${c.medicalNeeds ? `<span class="badge high">🏥 ${esc(c.medicalNeeds)}</span>` : "—"}</dd>
             <dt>Medications</dt><dd>${esc(c.medications) || "—"}</dd>
             <dt>Dietary</dt><dd>${esc(c.dietary) || "—"}</dd>
             <dt>Physician</dt><dd>${esc(c.physician) || "—"}</dd>
             <dt>Insurance</dt><dd>${esc(c.insurance) || "—"}</dd>
-            <dt>Swim level</dt><dd>${esc(c.swimLevel) || "—"}</dd>
             <dt>Photo consent</dt><dd>${esc(c.photoConsent) || "—"}</dd>
             <dt>Notes</dt><dd>${esc(c.notes) || "—"}</dd>
           </dl>
@@ -1109,18 +1173,65 @@
   function counselorCardHTML(c) {
     const load = D.counselorLoad(c.name);
     return `<div class="card clin-card">
-      <div class="detail-head" style="margin-bottom:6px;">
+      <div class="detail-head" style="margin-bottom:6px;cursor:pointer;" onclick="navigate('counselor/${c.id}')">
         <div class="avatar" style="background:var(--accent);">${esc(initialsFromName(c.name))}</div>
         <div><h3 style="margin:0;">${esc(c.name)}</h3><div class="detail-meta">${esc(c.role || "")}</div></div>
       </div>
       ${c.phone ? `<div class="muted" style="font-size:13px;">📞 ${esc(c.phone)}</div>` : ""}
       <div class="muted" style="font-size:13px;margin-top:8px;">🏕️ <strong>${load.bunks}</strong> bunk(s) · 🧒 <strong>${load.bunkCampers + load.directCampers}</strong> camper(s)</div>
-      <div style="display:flex;gap:8px;margin-top:10px;">
+      <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;">
+        <button class="btn btn-sm" onclick="navigate('counselor/${c.id}')">View athletes</button>
         <button class="btn btn-sm btn-secondary" onclick="App.openCounselor('${c.id}')">✏️ Edit</button>
         <button class="btn btn-sm btn-danger" onclick="App.deleteCounselor('${c.id}')">Remove</button>
       </div>
     </div>`;
   }
+
+  /* Counselor detail — every athlete under this counselor (by bunk + direct). */
+  routes.counselor = function (id) {
+    const c = D.getCounselor(id);
+    if (!c) { view().innerHTML = `<p class="empty">Counselor not found.</p>`; return; }
+    titleEl().textContent = c.name;
+    actionsEl().innerHTML = `
+      <button class="btn btn-secondary" onclick="App.openCounselor('${c.id}')">✏️ Edit</button>
+      <button class="btn btn-secondary" onclick="navigate('counselors')">← Counselors</button>`;
+    const bunks = D.getState().bunks.filter((b) => b.counselor === c.name);
+    // Athletes via the counselor's bunks, plus any assigned individually.
+    const byBunk = {};
+    let total = 0;
+    bunks.forEach((b) => { byBunk[b.id] = D.campersInBunk(b.id); total += byBunk[b.id].length; });
+    const direct = D.getState().campers.filter((k) => k.counselor === c.name && !bunks.some((b) => b.id === k.bunkId));
+    total += direct.length;
+
+    const camperRow = (k) => {
+      const bunk = D.getBunk(k.bunkId);
+      const flags = D.camperFlags(k).map((f) => f.icon).join(" ");
+      return `<div class="cart-line" style="cursor:pointer;" onclick="navigate('camper/${k.id}')">
+        <span>${avatarHTML(k, 28, true)}${esc(fullName(k))} <span class="muted">· ${esc(k.age)}</span></span>
+        <span class="muted">${bunk ? esc(bunk.name) : "—"}${k.bed ? " · " + esc(k.bed) : ""} ${flags}</span>
+      </div>`;
+    };
+
+    view().innerHTML = `
+      <div class="row">
+        <div class="card" style="flex:1;">
+          <div class="detail-head">
+            <div class="avatar" style="background:var(--accent);">${esc(initialsFromName(c.name))}</div>
+            <div><h2>${esc(c.name)}</h2><div class="detail-meta">${esc(c.role || "Counselor")}${c.phone ? ` · 📞 ${esc(c.phone)}` : ""}</div></div>
+          </div>
+          <div class="muted" style="margin-top:10px;">Covering <strong>${bunks.length}</strong> bunk(s) and <strong>${total}</strong> athlete(s).</div>
+        </div>
+      </div>
+      ${bunks.length ? bunks.map((b) => `
+        <div class="card" style="margin-top:16px;">
+          <h3 style="margin:0 0 8px;">🏕️ Bunk ${esc(b.name)} <span class="muted">(${byBunk[b.id].length}/${b.capacity})</span></h3>
+          ${byBunk[b.id].length ? byBunk[b.id].map(camperRow).join("") : `<p class="muted">No campers in this bunk yet.</p>`}
+        </div>`).join("") : ""}
+      ${direct.length ? `<div class="card" style="margin-top:16px;">
+        <h3 style="margin:0 0 8px;">🧒 Individually assigned</h3>
+        ${direct.map(camperRow).join("")}</div>` : ""}
+      ${!bunks.length && !direct.length ? `<div class="card" style="margin-top:16px;"><p class="empty">No athletes assigned yet. Assign bunks on the Counselors page.</p></div>` : ""}`;
+  };
 
   /* ============================================================
      CLINICIANS
@@ -1183,7 +1294,12 @@
     titleEl().textContent = "Meals & Menu";
     const dates = D.sessionDates();
     const today = D.ymd(new Date());
-    if (!menuDate || !dates.includes(menuDate)) menuDate = dates.includes(today) ? today : dates[0];
+    if (!menuDate || !dates.includes(menuDate)) {
+      // Prefer today; if today's menu is empty, jump to the first day that has one.
+      const planned = Object.keys(D.getState().menus).filter((d) => dates.includes(d)).sort();
+      const todayHasMenu = D.MEALS.some((m) => (D.getMenu(today)[m.key] || []).length);
+      menuDate = (dates.includes(today) && todayHasMenu) ? today : (planned[0] || (dates.includes(today) ? today : dates[0]));
+    }
     actionsEl().innerHTML = "";
     drawMenu();
   };
@@ -1227,7 +1343,7 @@
         ${dishes.length ? dishes.map((dish, i) => {
           const da = D.dishAllergens(dish);
           const conflict = da.length && present.some((c) => D.camperAllergens(c).some((a) => da.includes(a)));
-          return `<span class="chip dish ${conflict ? "dish-flag" : ""}" title="${da.length ? "Contains: " + da.join(", ") : ""}">${esc(dish)}${conflict ? " ⚠️" : ""}<button onclick="App.removeDish('${m.key}',${i})" title="Remove">×</button></span>`;
+          return `<span class="chip dish ${conflict ? "dish-flag" : ""}" title="${da.length ? "Contains: " + da.join(", ") : "No allergens tagged"}">${esc(D.dishName(dish))}${da.length ? ` <span class="dish-alg">${da.map(esc).join(", ")}</span>` : ""}${conflict ? " ⚠️" : ""}<button onclick="App.editDish('${m.key}',${i})" title="Edit allergens">✎</button><button onclick="App.removeDish('${m.key}',${i})" title="Remove">×</button></span>`;
         }).join("") : `<span class="muted" style="font-size:13px;">No dishes yet.</span>`}
       </div>
       <div style="display:flex;gap:6px;margin-top:12px;">
@@ -1235,6 +1351,46 @@
         <button class="btn btn-sm" onclick="App.addDish('${m.key}')">Add</button>
       </div>
     </div>`;
+  }
+
+  // Modal to name a dish and tag the allergens it contains (common + camper customs).
+  function openDishModal(mealKey, idx, presetName) {
+    const menu = D.getMenu(menuDate);
+    const existing = idx != null ? menu[mealKey][idx] : null;
+    const name = existing ? D.dishName(existing) : (presetName || "");
+    const current = existing ? D.dishAllergens(existing) : D.dishAllergens(name);
+    const opts = D.allergenOptions();
+    const checkbox = (o) => `<label class="alg-check"><input type="checkbox" value="${esc(o.value)}" ${current.includes(o.value) ? "checked" : ""}> ${esc(o.label)}</label>`;
+    const mealLabel = (D.MEALS.find((m) => m.key === mealKey) || {}).label || "";
+    openModal(`
+      <h2>${existing ? "Edit dish" : "Add dish"} — ${esc(mealLabel)}</h2>
+      <form id="dishForm">
+        <div class="field"><label>Dish name *</label><input name="name" required value="${esc(name)}" autofocus></div>
+        <div class="field"><label>Allergens in this dish</label>
+          <div class="alg-grid">
+            <div class="alg-group"><div class="alg-head">Common allergens</div>${opts.common.map(checkbox).join("")}</div>
+            ${opts.custom.length ? `<div class="alg-group"><div class="alg-head">From campers' profiles</div>${opts.custom.map(checkbox).join("")}</div>` : ""}
+          </div>
+          <div class="muted" style="font-size:12px;margin-top:6px;">Anything checked here triggers an allergy alert for campers present that day. Custom allergens from campers' files appear automatically.</div>
+        </div>
+        <div class="form-actions">
+          <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+          <button type="submit" class="btn">${existing ? "Save" : "Add dish"}</button>
+        </div>
+      </form>`, true);
+    document.getElementById("dishForm").addEventListener("submit", (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.target);
+      const nm = (fd.get("name") || "").trim();
+      if (!nm) return;
+      const allergens = [...e.target.querySelectorAll('input[type="checkbox"]:checked')].map((x) => x.value);
+      const dishes = (D.getMenu(menuDate)[mealKey] || []).slice();
+      if (idx != null) dishes[idx] = { name: nm, allergens };
+      else dishes.push({ name: nm, allergens });
+      D.setMenu(menuDate, mealKey, dishes);
+      closeModal();
+      drawMenu();
+    });
   }
 
   function alertItemHTML(a) {
@@ -1368,11 +1524,12 @@
 
       <div class="packet-hero">
         <h1>${esc(fullName(c))}</h1>
+        ${c.campName ? `<div class="packet-camp-name">${esc(c.campName)}</div>` : ""}
         <div class="packet-meta">
           ${side ? `<span class="badge side-${side.id}">${esc(side.name)}</span>` : ""}
-          ${bunk ? `<span class="badge">Bunk ${esc(bunk.name)}</span>` : ""}
+          ${bunk ? `<span class="badge">Bunk ${esc(bunk.name)}${c.bed ? ` · ${esc(c.bed)} bed` : ""}</span>` : ""}
           <span class="badge">${esc(c.startDate)} → ${esc(c.endDate)} · ${D.camperDuration(c)} days</span>
-          ${bunk && bunk.counselor ? `<span class="badge">Counselor: ${esc(bunk.counselor)}</span>` : ""}
+          ${(c.counselor || (bunk && bunk.counselor)) ? `<span class="badge">Counselor: ${esc(c.counselor || bunk.counselor)}</span>` : ""}
         </div>
       </div>
 
@@ -1501,14 +1658,22 @@
           <div class="field"><label>First name *</label><input name="firstName" required value="${esc(d.firstName || "")}"></div>
           <div class="field"><label>Last name *</label><input name="lastName" required value="${esc(d.lastName || "")}"></div>
           <div class="field"><label>Age</label><input name="age" type="number" min="3" max="18" value="${esc(d.age || "")}"></div>
-          <div class="field"><label>Grade</label><input name="grade" value="${esc(d.grade || "")}"></div>
+          <div class="field"><label>Grade</label><select name="grade">${selOpts([""].concat(D.GRADES), d.grade)}</select></div>
           <div class="field"><label>Gender</label><select name="gender">${selOpts(["", "Female", "Male", "Non-binary", "Prefer not to say"], d.gender)}</select></div>
-          <div class="field"><label>T-shirt size</label><select name="shirtSize">${selOpts(["", "YXS", "YS", "YM", "YL", "AS", "AM", "AL", "AXL"], d.shirtSize)}</select></div>
+          <div class="field"><label>T-shirt size</label><select name="shirtSize">${selOpts([""].concat(D.SHIRT_SIZES), d.shirtSize)}</select></div>
           <div class="field full"><label>Home address</label><input name="address" value="${esc(d.address || "")}"></div>
         </div>
 
-        <h4 class="section-title">Dates at Camp</h4>
-        <div class="form-grid">${attendanceFieldsHTML(d)}</div>
+        <h4 class="section-title">Dates at Camp *</h4>
+        <div class="form-grid">
+          <div class="field full"><label>Which 2026 camp are you registering for?</label>
+            <select name="campName" required onchange="App.enrollPickCamp(this.value)">
+              <option value="">— choose a camp —</option>
+              ${D.CAMPS_2026.map((cp) => `<option value="${esc(cp.name)}" ${d.campName === cp.name ? "selected" : ""}>${esc(cp.name)} · ${fmtRange(cp.start, cp.end)} · ${money(cp.fee)}</option>`).join("")}
+            </select>
+          </div>
+          <div class="field full"><div class="muted" id="enrollCampInfo">${d.startDate ? `Dates: <strong>${esc(d.startDate)} → ${esc(d.endDate)}</strong> · Camp fee <strong>${money(d.campFee || 0)}</strong>` : "Camp fee is added to your total at checkout."}</div></div>
+        </div>
 
         <h4 class="section-title">Parent / Guardian</h4>
         <div class="form-grid">
@@ -1520,9 +1685,9 @@
 
         <h4 class="section-title">Emergency &amp; Pickup</h4>
         <div class="form-grid">
-          <div class="field full"><label>Emergency contact #1</label><input name="emergencyContact" placeholder="Name — relationship — phone" value="${esc(d.emergencyContact || "")}"></div>
-          <div class="field full"><label>Emergency contact #2</label><input name="emergencyContact2" placeholder="Name — relationship — phone" value="${esc(d.emergencyContact2 || "")}"></div>
-          <div class="field full"><label>Authorized for pickup</label><input name="authorizedPickup" value="${esc(d.authorizedPickup || "")}"></div>
+          ${contactFieldsHTML("Emergency contact #1", { name: "emergencyName", rel: "emergencyRel", phone: "emergencyPhone" }, d)}
+          ${contactFieldsHTML("Emergency contact #2", { name: "emergency2Name", rel: "emergency2Rel", phone: "emergency2Phone" }, d)}
+          ${contactFieldsHTML("Authorized for pickup", { name: "pickupName", rel: "pickupRel", phone: "pickupPhone" }, d)}
         </div>
 
         <h4 class="section-title">Medical &amp; Health</h4>
@@ -1533,7 +1698,6 @@
           <div class="field full"><label>Medications (name, dose, schedule)</label><input name="medications" value="${esc(d.medications || "")}"></div>
           <div class="field"><label>Physician (name &amp; phone)</label><input name="physician" value="${esc(d.physician || "")}"></div>
           <div class="field"><label>Insurance (provider &amp; policy #)</label><input name="insurance" value="${esc(d.insurance || "")}"></div>
-          <div class="field"><label>Swim level</label><select name="swimLevel">${selOpts(["", "Non-swimmer", "Beginner", "Intermediate", "Swimmer"], d.swimLevel)}</select></div>
           <div class="field"><label>Photo/media consent</label><select name="photoConsent">${selOpts(["", "Yes", "No"], d.photoConsent)}</select></div>
           <div class="field full"><label>Anything else we should know?</label><textarea name="notes">${esc(d.notes || "")}</textarea></div>
         </div>
@@ -1543,6 +1707,9 @@
     document.getElementById("enrollForm").addEventListener("submit", (e) => {
       e.preventDefault();
       Object.assign(enrollDraft, Object.fromEntries(new FormData(e.target).entries()));
+      // Make sure camp dates/fee are captured even if onchange didn't fire.
+      const cp = D.CAMPS_2026.find((x) => x.name === enrollDraft.campName);
+      if (cp) { enrollDraft.startDate = cp.start; enrollDraft.endDate = cp.end; enrollDraft.campFee = cp.fee; }
       enrollStep = 2; renderEnroll();
       window.scrollTo(0, 0);
     });
@@ -1550,19 +1717,22 @@
 
   function renderEnrollBunk() {
     const d = enrollDraft;
+    const bunk = d.bunkId ? D.getBunk(d.bunkId) : null;
     view().innerHTML = enrollShell(`
-      <p class="enroll-lead">Pick a bunk for <strong>${esc(d.firstName || "your camper")}</strong>. West and East sides flank the wrestling gym. Click any open bunk.</p>
+      <p class="enroll-lead">Pick a bunk for <strong>${esc(d.firstName || "your camper")}</strong>, then choose a bed. Girls, West, and East bunkhouses — full bunks show a 🔒.</p>
       <div id="enrollMapHost">${bunkMapHTML({ selectMode: true, selectedBunk: d.bunkId })}</div>
+      <div id="enrollBedHost">${bunk ? bedPickerHTML(bunk, d.bed, "App.enrollPickBed") : ""}</div>
       <div class="form-actions" style="justify-content:space-between;">
         <button class="btn btn-secondary" onclick="App.enrollGoto(1)">← Back</button>
-        <button class="btn btn-accent btn-lg" id="enrollBunkNext" ${d.bunkId ? "" : "disabled"} onclick="App.enrollGoto(3)">Next: Gear &amp; Wallet →</button>
+        <button class="btn btn-accent btn-lg" id="enrollBunkNext" ${d.bunkId && d.bed ? "" : "disabled"} onclick="App.enrollGoto(3)">Next: Gear &amp; Wallet →</button>
       </div>`);
   }
 
   function renderEnrollGear() {
     const st = D.getState();
     const cartTotal = enrollDraft.gearCart.reduce((s, g) => s + g.price * g.qty, 0);
-    const grand = cartTotal + Number(enrollDraft.deposit || 0);
+    const campFee = Number(enrollDraft.campFee || 0);
+    const grand = campFee + cartTotal + Number(enrollDraft.deposit || 0);
     view().innerHTML = enrollShell(`
       <p class="enroll-lead">Gear up before day one — pre-purchased items are <strong>waiting on the bunk</strong> when ${esc(enrollDraft.firstName || "your camper")} arrives. Then load the camp store wallet so there's no scrambling for cash all summer.</p>
 
@@ -1611,7 +1781,7 @@
       </div>
 
       <div class="enroll-summary">
-        <div>Gear order: <strong>${money(cartTotal)}</strong> &nbsp;·&nbsp; Wallet deposit: <strong>${money(enrollDraft.deposit || 0)}</strong></div>
+        <div>${esc(enrollDraft.campName || "Camp")}: <strong>${money(campFee)}</strong> &nbsp;·&nbsp; Gear: <strong>${money(cartTotal)}</strong> &nbsp;·&nbsp; Wallet: <strong>${money(enrollDraft.deposit || 0)}</strong></div>
         <div class="enroll-grand">Total today: ${money(grand)}</div>
       </div>
       <div class="form-actions" style="justify-content:space-between;">
@@ -1626,26 +1796,28 @@
     const d = enrollDraft;
     const bunk = D.getBunk(d.bunkId);
     const cartTotal = d.gearCart.reduce((s, g) => s + g.price * g.qty, 0);
-    const grand = cartTotal + Number(d.deposit || 0);
+    const campFee = Number(d.campFee || 0);
+    const grand = campFee + cartTotal + Number(d.deposit || 0);
     view().innerHTML = enrollShell(`
       <p class="enroll-lead">Almost done — please review and confirm.</p>
       <div class="enroll-card">
         <h4 class="section-title" style="margin-top:0;">Camper</h4>
         <dl class="kv">
           <dt>Name</dt><dd>${esc(d.firstName || "")} ${esc(d.lastName || "")}</dd>
-          <dt>Age / Grade</dt><dd>${esc(d.age || "—")} · Grade ${esc(d.grade || "—")}</dd>
+          <dt>Age / Grade</dt><dd>${esc(d.age || "—")} · ${esc(d.grade || "—")}</dd>
+          <dt>Camp</dt><dd>${esc(d.campName || "—")}</dd>
           <dt>Dates</dt><dd>${esc(d.startDate || "—")} → ${esc(d.endDate || "—")}</dd>
-          <dt>Bunk</dt><dd>${bunk ? esc(bunk.name) : "—"}</dd>
+          <dt>Bunk / Bed</dt><dd>${bunk ? esc(bunk.name) : "—"}${d.bed ? ` · <strong>${esc(d.bed)}</strong>` : ""} <span class="muted">— where your gear will be waiting</span></dd>
           <dt>Guardian</dt><dd>${esc(d.guardianName || "—")} · ${esc(d.guardianPhone || "")}</dd>
           <dt>Allergies</dt><dd>${esc(d.allergies || "None")}</dd>
           <dt>Medications</dt><dd>${esc(d.medications || "None")}</dd>
         </dl>
 
-        <h4 class="section-title">Gear Order (waiting on the bunk)</h4>
+        <h4 class="section-title">Gear Order ${bunk ? `(waiting on Bunk ${esc(bunk.name)}${d.bed ? `, ${esc(d.bed)} bed` : ""})` : "(waiting on the bunk)"}</h4>
         ${d.gearCart.length ? `<ul class="packet-list">${d.gearCart.map((g) => `<li>${g.kind === "package" ? "🎁" : "🎽"} ${esc(g.name)}${g.qty > 1 ? ` ×${g.qty}` : ""} — ${money(g.price * g.qty)}</li>`).join("")}</ul>` : `<p class="muted">No gear added.</p>`}
 
         <div class="enroll-summary" style="margin-top:14px;">
-          <div>Gear: <strong>${money(cartTotal)}</strong> &nbsp;·&nbsp; Wallet: <strong>${money(d.deposit || 0)}</strong></div>
+          <div>${esc(d.campName || "Camp")}: <strong>${money(campFee)}</strong> &nbsp;·&nbsp; Gear: <strong>${money(cartTotal)}</strong> &nbsp;·&nbsp; Wallet: <strong>${money(d.deposit || 0)}</strong></div>
           <div class="enroll-grand">Total: ${money(grand)}</div>
         </div>
       </div>
@@ -1677,6 +1849,11 @@
 
   App.selectBunk = selectBunk;
   App.regBack = function () { renderRegStep1(); };
+  App.regPickBed = function (pos) { regDraft.bed = pos; renderRegStep2(); };
+  App.sortCampers = function (key) {
+    if (camperSort.key === key) camperSort.dir *= -1; else camperSort = { key, dir: 1 };
+    render();
+  };
   App.filterStay = function (label) {
     attFilter = attFilter === label ? null : label;
     routes.attendance();
@@ -1797,28 +1974,27 @@
           <div class="field"><label>First name</label><input name="firstName" value="${esc(c.firstName)}"></div>
           <div class="field"><label>Last name</label><input name="lastName" value="${esc(c.lastName)}"></div>
           <div class="field"><label>Age</label><input name="age" type="number" value="${esc(c.age)}"></div>
-          <div class="field"><label>Grade</label><input name="grade" value="${esc(c.grade)}"></div>
+          <div class="field"><label>Grade</label>
+            <select name="grade">${selOpts([""].concat(D.GRADES), c.grade)}</select></div>
           <div class="field"><label>Gender</label>
             <select name="gender">${selOpts(["", "Female", "Male", "Non-binary", "Prefer not to say"], c.gender)}</select></div>
           <div class="field"><label>T-shirt size</label>
-            <select name="shirtSize">${selOpts(["", "YXS", "YS", "YM", "YL", "AS", "AM", "AL", "AXL"], c.shirtSize)}</select></div>
+            <select name="shirtSize">${selOpts([""].concat(D.SHIRT_SIZES), c.shirtSize)}</select></div>
           <div class="field full"><label>Home address</label><input name="address" value="${esc(c.address)}"></div>
           ${attendanceFieldsHTML(c)}
           <div class="field"><label>Guardian name</label><input name="guardianName" value="${esc(c.guardianName)}"></div>
           <div class="field"><label>Relationship</label><input name="guardianRelationship" value="${esc(c.guardianRelationship)}"></div>
           <div class="field"><label>Guardian phone</label><input name="guardianPhone" value="${esc(c.guardianPhone)}"></div>
           <div class="field"><label>Guardian email</label><input name="guardianEmail" type="email" value="${esc(c.guardianEmail)}"></div>
-          <div class="field full"><label>Emergency contact #1</label><input name="emergencyContact" value="${esc(c.emergencyContact)}"></div>
-          <div class="field full"><label>Emergency contact #2</label><input name="emergencyContact2" value="${esc(c.emergencyContact2)}"></div>
-          <div class="field full"><label>Authorized for pickup</label><input name="authorizedPickup" value="${esc(c.authorizedPickup)}"></div>
+          ${contactFieldsHTML("Emergency contact #1", { name: "emergencyName", rel: "emergencyRel", phone: "emergencyPhone" }, c)}
+          ${contactFieldsHTML("Emergency contact #2", { name: "emergency2Name", rel: "emergency2Rel", phone: "emergency2Phone" }, c)}
+          ${contactFieldsHTML("Authorized for pickup", { name: "pickupName", rel: "pickupRel", phone: "pickupPhone" }, c)}
           <div class="field"><label>Allergies</label><input name="allergies" value="${esc(c.allergies)}"></div>
           <div class="field"><label>Dietary</label><input name="dietary" value="${esc(c.dietary)}"></div>
           <div class="field full"><label>Medical needs</label><input name="medicalNeeds" value="${esc(c.medicalNeeds)}"></div>
           <div class="field full"><label>Medications</label><input name="medications" value="${esc(c.medications)}"></div>
           <div class="field"><label>Physician</label><input name="physician" value="${esc(c.physician)}"></div>
           <div class="field"><label>Insurance</label><input name="insurance" value="${esc(c.insurance)}"></div>
-          <div class="field"><label>Swim level</label>
-            <select name="swimLevel">${selOpts(["", "Non-swimmer", "Beginner", "Intermediate", "Swimmer"], c.swimLevel)}</select></div>
           <div class="field"><label>Photo/media consent</label>
             <select name="photoConsent">${selOpts(["", "Yes", "No"], c.photoConsent)}</select></div>
           <div class="field"><label>Counselor (individual)</label>
@@ -2044,11 +2220,11 @@
   /* ---------- Menu actions ---------- */
   App.addDish = function (mealKey) {
     const inp = document.getElementById("add_" + mealKey);
-    if (!inp || !inp.value.trim()) return;
-    const dishes = (D.getMenu(menuDate)[mealKey] || []).concat([inp.value.trim()]);
-    D.setMenu(menuDate, mealKey, dishes);
-    drawMenu();
+    const name = inp ? inp.value.trim() : "";
+    if (!name) { if (inp) inp.focus(); return; }
+    openDishModal(mealKey, null, name);
   };
+  App.editDish = function (mealKey, idx) { openDishModal(mealKey, idx); };
   App.removeDish = function (mealKey, idx) {
     const dishes = (D.getMenu(menuDate)[mealKey] || []).slice();
     dishes.splice(idx, 1);
@@ -2154,6 +2330,14 @@
     renderEnrollGear();
   };
   App.enrollSetDeposit = function (amt) { enrollDraft.deposit = Number(amt) || 0; renderEnrollGear(); };
+  App.enrollPickBed = function (pos) { enrollDraft.bed = pos; renderEnrollBunk(); };
+  App.enrollPickCamp = function (name) {
+    const cp = D.CAMPS_2026.find((x) => x.name === name);
+    if (cp) { enrollDraft.campName = cp.name; enrollDraft.startDate = cp.start; enrollDraft.endDate = cp.end; enrollDraft.campFee = cp.fee; }
+    else { enrollDraft.campName = ""; enrollDraft.startDate = ""; enrollDraft.endDate = ""; enrollDraft.campFee = 0; }
+    const info = document.getElementById("enrollCampInfo");
+    if (info) info.innerHTML = cp ? `Dates: <strong>${cp.start} → ${cp.end}</strong> · Camp fee <strong>${money(cp.fee)}</strong>` : "Camp fee is added to your total at checkout.";
+  };
   App.enrollFinish = function () {
     const data = Object.assign({}, enrollDraft, { balance: Number(enrollDraft.deposit) || 0, prepurchases: enrollDraft.gearCart });
     const c = D.addCamper(data);
@@ -2170,11 +2354,9 @@
       const b = D.getBunk(bunkId);
       enrollDraft.bunkId = bunkId;
       enrollDraft.sideId = b.sideId;
-      const host = document.getElementById("enrollMapHost");
-      if (host) host.innerHTML = bunkMapHTML({ selectMode: true, selectedBunk: bunkId });
-      const nx = document.getElementById("enrollBunkNext");
-      if (nx) nx.disabled = false;
-      toast(`Bunk ${b.name} selected`, "success");
+      enrollDraft.bed = "";
+      renderEnrollBunk();
+      toast(`Bunk ${b.name} selected — pick a bed`, "success");
       return;
     }
     _selBeforeEnroll(bunkId);

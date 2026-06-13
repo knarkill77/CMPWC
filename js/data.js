@@ -7,34 +7,68 @@
 (function (global) {
   "use strict";
 
-  const STORAGE_KEY = "cmp_camp_state_v2";
+  const STORAGE_KEY = "cmp_camp_state_v3";
 
   /* ---------- Configuration ---------- */
   const CONFIG = {
     campName: "Young Guns Wrestling Camp",
-    bunkCapacity: 3,        // each bunk sleeps/seats 3 kids
-    bunksPerSide: 17,       // 17 bunks x 3 = 51 beds per side (~50 campers)
+    bunkCapacity: 3,        // each bunk has 3 beds: bottom / middle / top
+    // Three bunkhouses. Girls is to the LEFT of West and is half the size.
     sides: [
-      { id: "west", name: "West Side", prefix: "W", color: "#2563eb" },
-      { id: "east", name: "East Side", prefix: "E", color: "#16a34a" },
+      { id: "girls", name: "Girls",     prefix: "G", color: "#db2777", bunkCount: 8 },
+      { id: "west",  name: "West Side", prefix: "W", color: "#2563eb", bunkCount: 17 },
+      { id: "east",  name: "East Side", prefix: "E", color: "#16a34a", bunkCount: 17 },
     ],
-    // The overall camp session — bounds the calendar and attendance timeline.
-    session: { start: "2026-06-15", end: "2026-07-31" },
+    // The overall season — bounds the calendar and attendance timeline.
+    // Spans the earliest 2026 camp start to the latest end.
+    session: { start: "2026-05-30", end: "2026-08-07" },
   };
 
-  // Common length-of-stay presets (days).
-  const STAY_PRESETS = [7, 15, 20, 30];
+  // Bunk bed positions, bottom-up.
+  const BED_POSITIONS = ["Bottom", "Middle", "Top"];
+
+  // Grade bands.
+  const GRADES = ["Elementary", "Middle School", "High School"];
+
+  // T-shirt sizes: Youth Small through Adult 3XL.
+  const SHIRT_SIZES = ["Youth S", "Youth M", "Youth L", "Adult S", "Adult M", "Adult L", "Adult XL", "Adult 2XL", "Adult 3XL"];
+
+  // 2026 Young Guns camps (younggunswrestlingcamps.com/camps). Camp fee
+  // defaults to $150 and is added to the registration grand total.
+  const CAMPS_2026 = [
+    { name: "30-Day Challenge Camp",                 start: "2026-05-30", end: "2026-06-28", fee: 150, location: "Ebensburg, PA" },
+    { name: "5-Day Elite Camp #1",                   start: "2026-06-01", end: "2026-06-05", fee: 150, location: "Ebensburg, PA" },
+    { name: "14-Day Takedown, Defense & Scramble",   start: "2026-06-07", end: "2026-06-20", fee: 150, location: "Ebensburg, PA" },
+    { name: "5-Day Defense & Scramble Camp",         start: "2026-06-08", end: "2026-06-12", fee: 150, location: "Ebensburg, PA" },
+    { name: "Novice Camp (Moline, IL)",              start: "2026-06-08", end: "2026-06-11", fee: 150, location: "Moline, IL" },
+    { name: "5-Day Takedown Camp",                   start: "2026-06-15", end: "2026-06-19", fee: 150, location: "Ebensburg, PA" },
+    { name: "5-Day World Class Camp",                start: "2026-06-22", end: "2026-06-26", fee: 150, location: "Ebensburg, PA" },
+    { name: "4-Day Kids All-Star Camp",              start: "2026-06-29", end: "2026-07-02", fee: 150, location: "Ebensburg, PA" },
+    { name: "Top Camp #1",                           start: "2026-07-13", end: "2026-07-17", fee: 150, location: "Ebensburg, PA" },
+    { name: "14-Day July Camp",                      start: "2026-07-19", end: "2026-08-01", fee: 150, location: "Ebensburg, PA" },
+    { name: "5-Day Takedown Camp (July)",            start: "2026-07-20", end: "2026-07-24", fee: 150, location: "Ebensburg, PA" },
+    { name: "5-Day Nashville Camp",                  start: "2026-07-26", end: "2026-07-30", fee: 150, location: "Nashville, TN" },
+    { name: "Elite Camp (July)",                     start: "2026-07-27", end: "2026-07-31", fee: 150, location: "Ebensburg, PA" },
+    { name: "Top Camp #2",                           start: "2026-08-03", end: "2026-08-07", fee: 150, location: "Ebensburg, PA" },
+  ];
+
+  // Common length-of-stay presets (days) — aligned to the camp lengths.
+  const STAY_PRESETS = [4, 5, 14, 30];
 
   /* ---------- Log / incident categories ---------- */
   const LOG_TYPES = {
     injury:   { label: "Injury",   icon: "🩹", color: "#dc2626" },
     medical:  { label: "Medical",  icon: "🏥", color: "#7c3aed" },
+    behavior: { label: "Behavior", icon: "🧭", color: "#0d9488" },
     allergy:  { label: "Allergy",  icon: "🥜", color: "#d97706" },
     food:     { label: "Food",     icon: "🍽️", color: "#0891b2" },
     delivery: { label: "Delivery", icon: "📦", color: "#4f46e5" },
     incident: { label: "Incident", icon: "⚠️", color: "#ea580c" },
     note:     { label: "Note",     icon: "📝", color: "#475569" },
   };
+
+  // Log types that count as "open incidents" to track until resolved.
+  const INCIDENT_TYPES = ["injury", "incident", "behavior", "medical"];
 
   const STORE_CATEGORIES = ["Food", "Apparel", "Snacks", "Gear", "Other"];
 
@@ -59,9 +93,7 @@
     { key: "dinner",    label: "Dinner",    icon: "🍽️" },
   ];
 
-  /* ---------- Allergen detection ----------
-     Maps a canonical allergen to words that imply it. Used to cross
-     reference camper allergies against the day's menu. */
+  /* ---------- Allergen detection ---------- */
   const ALLERGEN_MAP = {
     peanut:      ["peanut", "pb&j", "pb ", "goober"],
     "tree nut":  ["tree nut", "almond", "cashew", "walnut", "pecan", "pistachio", "hazelnut", "pesto"],
@@ -81,14 +113,12 @@
   function nowISO() {
     return new Date().toISOString();
   }
-  // Local-safe YYYY-MM-DD formatting (avoids UTC off-by-one from toISOString).
   function ymd(d) {
     const m = String(d.getMonth() + 1).padStart(2, "0");
     const day = String(d.getDate()).padStart(2, "0");
     return `${d.getFullYear()}-${m}-${day}`;
   }
   function parseDate(str) { return new Date(str + "T00:00:00"); }
-  // Inclusive day count between two YYYY-MM-DD strings.
   function daysBetween(a, b) {
     if (!a || !b) return 0;
     return Math.round((parseDate(b) - parseDate(a)) / 86400000) + 1;
@@ -103,7 +133,6 @@
   const chance = (p) => Math.random() < p;
   const randInt = (a, b) => a + Math.floor(Math.random() * (b - a + 1));
 
-  // All date strings across the camp session, in order.
   function buildSessionDates(cfg) {
     const out = [];
     let d = parseDate(cfg.session.start);
@@ -116,14 +145,15 @@
   function buildBunks() {
     const bunks = [];
     CONFIG.sides.forEach((side) => {
-      for (let i = 1; i <= CONFIG.bunksPerSide; i++) {
+      const count = side.bunkCount || 0;
+      for (let i = 1; i <= count; i++) {
         bunks.push({
           id: uid("bunk"),
           name: side.prefix + i,
           sideId: side.id,
           capacity: CONFIG.bunkCapacity,
           counselor: "",
-          logs: [], // bunk-level incidents/notes that apply to the whole cabin
+          logs: [],
         });
       }
     });
@@ -142,16 +172,38 @@
       { id: uid("itm"), name: "Drawstring Bag",     category: "Gear",    price: 10, stock: 100 },
       { id: uid("itm"), name: "Camp Cap",           category: "Apparel", price: 15, stock: 100 },
       { id: uid("itm"), name: "Mat Towel",          category: "Gear",    price: 14, stock: 90 },
-      { id: uid("itm"), name: "Trail Mix",          category: "Snacks",  price: 3,  stock: 300 },
-      { id: uid("itm"), name: "Protein Bar",        category: "Snacks",  price: 3,  stock: 250 },
-      { id: uid("itm"), name: "Gatorade",           category: "Snacks",  price: 3,  stock: 300 },
-      { id: uid("itm"), name: "Ice Cream",          category: "Food",    price: 4,  stock: 200 },
-      { id: uid("itm"), name: "Hot Dog Combo",      category: "Food",    price: 6,  stock: 200 },
+      // --- Snacks: candy ---
+      { id: uid("itm"), name: "Trail Mix",                 category: "Snacks", price: 3,    stock: 300 },
+      { id: uid("itm"), name: "M&M's (Peanut)",            category: "Snacks", price: 2,    stock: 240 },
+      { id: uid("itm"), name: "Skittles",                  category: "Snacks", price: 2,    stock: 240 },
+      { id: uid("itm"), name: "Sour Patch Kids",           category: "Snacks", price: 2,    stock: 200 },
+      { id: uid("itm"), name: "Reese's Cups",              category: "Snacks", price: 2,    stock: 200 },
+      { id: uid("itm"), name: "Snickers Bar",              category: "Snacks", price: 2,    stock: 200 },
+      { id: uid("itm"), name: "Takis (Fuego)",             category: "Snacks", price: 3,    stock: 180 },
+      { id: uid("itm"), name: "Goldfish Crackers",         category: "Snacks", price: 2,    stock: 180 },
+      { id: uid("itm"), name: "Rice Krispies Treat",       category: "Snacks", price: 2,    stock: 200 },
+      // --- Snacks: protein / energy ---
+      { id: uid("itm"), name: "Protein Bar (Clif)",        category: "Snacks", price: 3,    stock: 250 },
+      { id: uid("itm"), name: "RXBAR Protein Bar",         category: "Snacks", price: 3,    stock: 180 },
+      { id: uid("itm"), name: "Beef Jerky Stick",          category: "Snacks", price: 3,    stock: 200 },
+      { id: uid("itm"), name: "Trail Protein Mix",         category: "Snacks", price: 3,    stock: 150 },
+      // --- Snacks: hydration / drinks ---
+      { id: uid("itm"), name: "Gatorade",                  category: "Snacks", price: 3,    stock: 360 },
+      { id: uid("itm"), name: "Powerade",                  category: "Snacks", price: 3,    stock: 300 },
+      { id: uid("itm"), name: "Liquid IV (Hydration)",     category: "Snacks", price: 3,    stock: 200 },
+      { id: uid("itm"), name: "Prime Hydration",           category: "Snacks", price: 4,    stock: 200 },
+      { id: uid("itm"), name: "Bottled Water",             category: "Snacks", price: 1.5,  stock: 500 },
+      { id: uid("itm"), name: "Chocolate Milk",            category: "Snacks", price: 2,    stock: 200 },
+      // --- Food: ice cream / treats ---
+      { id: uid("itm"), name: "Ice Cream Sandwich",        category: "Food",   price: 4,    stock: 200 },
+      { id: uid("itm"), name: "Popsicle (Freeze Pop)",     category: "Food",   price: 2,    stock: 300 },
+      { id: uid("itm"), name: "Drumstick Cone",            category: "Food",   price: 4,    stock: 160 },
+      { id: uid("itm"), name: "Italian Ice",               category: "Food",   price: 3,    stock: 200 },
+      { id: uid("itm"), name: "Hot Dog Combo",             category: "Food",   price: 6,    stock: 200 },
+      { id: uid("itm"), name: "Soft Pretzel",              category: "Food",   price: 4,    stock: 180 },
     ];
   }
 
-  // Pre-built gear bundles parents can buy at registration — these land on
-  // the camper's bunk waiting for them on arrival.
   function buildGearPackages() {
     return [
       { id: uid("pkg"), name: "Young Guns Starter Pack", price: 45,  popular: false,
@@ -193,15 +245,13 @@
     ];
     return defs.map((d, i) => {
       const schedule = [];
-      const stints = 2;
-      for (let s = 0; s < stints; s++) {
+      for (let s = 0; s < 2; s++) {
         const startIdx = Math.floor(Math.random() * Math.max(1, dates.length - 4));
-        const len = 2 + Math.floor(Math.random() * 3); // 2-4 days
+        const len = 2 + Math.floor(Math.random() * 3);
         for (let k = 0; k < len && startIdx + k < dates.length; k++) {
           if (!schedule.includes(dates[startIdx + k])) schedule.push(dates[startIdx + k]);
         }
       }
-      // Guarantee coverage on the opening days for a lively demo.
       if (i < 3) for (let k = 0; k < 4; k++) if (dates[k] && !schedule.includes(dates[k])) schedule.push(dates[k]);
       schedule.sort();
       return { id: uid("clin"), photo: "", schedule, ...d };
@@ -228,27 +278,34 @@
         lunch:     ["Mac & Cheese", "Garden Salad", "Garlic Knots"],
         dinner:    ["Baked Salmon", "Quinoa", "Roasted Vegetables"] },
     ];
-    plan.forEach((day, i) => { if (dates[i]) menus[dates[i]] = day; });
+    // Seed menus on the busiest camp window (mid-June takedown camp).
+    const anchor = dates.indexOf("2026-06-15");
+    const base = anchor >= 0 ? anchor : 0;
+    const toDish = (name) => ({ name, allergens: allergensFor(name) });
+    plan.forEach((day, i) => {
+      if (!dates[base + i]) return;
+      menus[dates[base + i]] = {
+        breakfast: day.breakfast.map(toDish),
+        lunch: day.lunch.map(toDish),
+        dinner: day.dinner.map(toDish),
+      };
+    });
     return menus;
   }
 
   /* ---------- Seed: campers ---------- */
   function generateCampers(bunks, gearPackages, store) {
-    const firsts = ["Ava","Liam","Mia","Noah","Sophia","Ethan","Isabella","Mason","Olivia","Lucas","Emma","Jackson","Harper","Aiden","Charlotte","Caleb","Amelia","Logan","Ella","Owen","Layla","Carter","Aria","Wyatt","Scarlett","Hudson","Nora","Levi","Zoe","Gavin","Lily","Brody","Hazel","Cole","Aubrey","Eli","Stella","Maddox","Violet","Tyler","Hannah","Dominic","Paisley","Connor","Savannah","Diego","Ruby","Xavier","Naomi","Tristan"];
+    const boyFirsts = ["Liam","Noah","Ethan","Mason","Lucas","Jackson","Aiden","Caleb","Logan","Owen","Carter","Wyatt","Hudson","Levi","Gavin","Brody","Cole","Eli","Maddox","Tyler","Dominic","Connor","Diego","Xavier","Tristan"];
+    const girlFirsts = ["Ava","Mia","Sophia","Isabella","Olivia","Emma","Harper","Charlotte","Amelia","Ella","Layla","Aria","Scarlett","Nora","Zoe","Lily","Hazel","Aubrey","Stella","Violet","Hannah","Paisley","Savannah","Ruby","Naomi"];
     const lasts = ["Mitchell","Foster","Reyes","Nguyen","Carter","Brooks","Patel","Sullivan","Ramirez","Bauer","Kowalski","Okafor","Delgado","Hughes","Romano","Park","Castillo","Schwartz","Abbott","Vance","Henderson","Lozano","Whitaker","Cho","Donovan","Becker","Marsh","Quinn","Ibrahim","Salazar","Tran","Pope","Maddox","Ferguson","Yamamoto","Crawford","Mendez","Stein","Burns","Acosta"];
-    const allergiesPool = ["","","","","","Peanuts","Tree nuts","Dairy","Eggs","Gluten","Shellfish","Soy","Sesame","Peanuts, Dairy","Eggs, Gluten","Fish"];
+    const allergiesPool = ["","","","","","Peanuts","Tree nuts","Dairy","Eggs","Gluten","Shellfish","Soy","Sesame","Peanuts, Dairy","Eggs, Gluten","Fish","Strawberries","Kiwi","Cinnamon"];
     const dietaryPool = ["","","","","Vegetarian","No pork","Halal","Vegan","Lactose-free","Gluten-free"];
     const medsPool = ["","","","","Albuterol inhaler — as needed (asthma)","EpiPen — emergency use","Adderall 10mg — with breakfast","Insulin — per diabetic care plan","Claritin 10mg — once daily","Ibuprofen — as needed for soreness","Singulair — nightly"];
     const medicalPool = ["","","","","Asthma — carries inhaler","Type 1 diabetes — see care plan","ADHD","Prior concussion (cleared to compete)","ACL recovery — knee brace","Eczema","Seasonal allergies","Lactose intolerant"];
-    const swimPool = ["","Non-swimmer","Beginner","Intermediate","Swimmer"];
     const notesPool = ["Loves takedowns.","Returning camper — 3rd year.","Was homesick the first night, settled in fast.","Team captain back home.","Needs encouragement during conditioning.","Strong on top, work on bottom escapes.","Coordinate vegetarian meals with kitchen.","Bunked with older sibling last year.","Very coachable — asks great questions.","Working toward first varsity season."];
-    const genders = ["Male","Male","Male","Female","Female","Non-binary"];
-    const startWaves = ["2026-06-15","2026-06-15","2026-06-22","2026-06-29","2026-07-06","2026-07-13"];
-    const durations = [7,7,7,15,15,20,30,10,14,21];
     const counselors = COUNSELOR_DEFS.map((c) => c.name);
     const guardianFirsts = ["Sarah","Michael","Dana","Robert","Linda","Carlos","Amy","James","Nicole","David","Maria","Kevin","Tasha","Brian"];
-    const relationships = ["Mother","Father","Guardian","Grandparent","Stepfather","Stepmother"];
-    const session = CONFIG.session;
+    const relationships = ["Mother","Father","Guardian","Grandparent","Stepfather","Stepmother","Aunt","Uncle"];
 
     // Shuffle bunks; fill to capacity so the map looks realistically partial.
     const shuffled = bunks.slice().sort(() => Math.random() - 0.5);
@@ -260,23 +317,25 @@
     const usedNames = new Set();
 
     for (let n = 0; n < N; n++) {
+      let bunk = null;
+      if (bunkIdx < shuffled.length) {
+        bunk = shuffled[bunkIdx];
+      }
+      const isGirl = bunk && bunk.sideId === "girls";
+      const firsts = isGirl ? girlFirsts : boyFirsts;
+
       let fn, ln, key, tries = 0;
       do { fn = pick(firsts); ln = pick(lasts); key = fn + ln; tries++; } while (usedNames.has(key) && tries < 25);
       usedNames.add(key);
 
-      let bunk = null;
-      if (bunkIdx < shuffled.length) {
-        bunk = shuffled[bunkIdx];
+      const bed = BED_POSITIONS[seatInBunk] || "";
+      if (bunk) {
+        usedBunks.add(bunk.id);
         seatInBunk++;
         if (seatInBunk >= CONFIG.bunkCapacity) { bunkIdx++; seatInBunk = 0; }
-        usedBunks.add(bunk.id);
       }
 
-      const start = pick(startWaves);
-      let dur = pick(durations);
-      let end = computeEndDate(start, dur);
-      if (end > session.end) { end = session.end; dur = daysBetween(start, end); }
-
+      const camp = pick(CAMPS_2026);
       const allergies = pick(allergiesPool);
       const medications = pick(medsPool);
       const medicalNeeds = pick(medicalPool);
@@ -284,14 +343,12 @@
       const balance = pick([0, 5, 10, 20, 25, 30, 40, 50, 60, 75, 100, 120]);
       const guardianName = pick(guardianFirsts) + " " + ln;
 
-      // Transactions: opening deposit, sometimes a debit so balances look "used".
       const transactions = [];
       const spent = chance(0.5) ? pick([4, 6, 9, 12, 15, 21]) : 0;
       const opening = balance + spent;
       if (opening > 0) transactions.push({ id: uid("txn"), type: "credit", amount: opening, memo: "Opening deposit (registration)", date: nowISO() });
       if (spent > 0) transactions.push({ id: uid("txn"), type: "debit", amount: spent, memo: pick(["Camp T-Shirt","Ice Cream","Gatorade ×2","Protein Bar","Mat Towel","Camp Cap"]), date: nowISO() });
 
-      // Logs
       const logs = [];
       if (allergies && allergies.trim()) {
         logs.push({ id: uid("log"), type: "allergy", text: "Allergy on file: " + allergies + ". Flagged to kitchen & nurse.", severity: "high", date: nowISO(), resolved: false, author: "Registration" });
@@ -302,7 +359,6 @@
         severity: chance(0.3) ? "high" : "normal", date: nowISO(), resolved: chance(0.5),
         author: pick(["Coach Reed","Nurse Kim","Coach Vega","Front Desk"]) });
 
-      // Pre-purchased gear waiting on the bunk
       const prepurchases = [];
       if (chance(0.55)) {
         if (chance(0.6)) {
@@ -317,22 +373,29 @@
       campers.push({
         id: uid("kid"), photo: "",
         firstName: fn, lastName: ln,
-        age: randInt(8, 17), gender: pick(genders), grade: String(randInt(3, 12)),
-        shirtSize: pick(["YS","YM","YL","AS","AM","AL"]),
+        age: randInt(8, 17),
+        gender: isGirl ? "Female" : "Male",
+        grade: pick(GRADES),
+        shirtSize: pick(SHIRT_SIZES),
         address: randInt(100, 999) + " " + pick(["Oak","Maple","Pine","Cedar","Main","Elm","Birch","Lake"]) + " " + pick(["St","Ave","Rd","Ln","Way"]) + ", " + pick(["Springfield","Riverton","Fairview","Lakeside","Clayton","Bedford"]),
-        startDate: start, endDate: end,
-        sideId: bunk ? bunk.sideId : "", bunkId: bunk ? bunk.id : "",
+        // Camp / attendance
+        campName: camp.name, campFee: camp.fee,
+        startDate: camp.start, endDate: camp.end,
+        sideId: bunk ? bunk.sideId : "", bunkId: bunk ? bunk.id : "", bed,
+        // Guardian
         guardianName,
         guardianPhone: "555-0" + randInt(100, 999),
         guardianEmail: fn.toLowerCase() + "." + ln.toLowerCase() + "@example.com",
         guardianRelationship: pick(relationships),
-        emergencyContact: pick(guardianFirsts) + " " + ln + " — " + pick(relationships) + " — 555-0" + randInt(100, 999),
-        emergencyContact2: chance(0.5) ? pick(guardianFirsts) + " " + pick(lasts) + " — " + pick(relationships) + " — 555-0" + randInt(100, 999) : "",
-        authorizedPickup: guardianName + (chance(0.4) ? ", " + pick(guardianFirsts) + " " + ln : ""),
+        // Emergency contacts (structured: name / relationship / phone)
+        emergencyName: pick(guardianFirsts) + " " + ln, emergencyRel: pick(relationships), emergencyPhone: "555-0" + randInt(100, 999),
+        emergency2Name: chance(0.5) ? pick(guardianFirsts) + " " + pick(lasts) : "", emergency2Rel: chance(0.5) ? pick(relationships) : "", emergency2Phone: chance(0.5) ? "555-0" + randInt(100, 999) : "",
+        // Authorized pickup (structured)
+        pickupName: guardianName, pickupRel: "Parent", pickupPhone: "555-0" + randInt(100, 999),
+        // Medical
         allergies, medicalNeeds, medications, dietary,
         physician: "Dr. " + pick(lasts) + " — 555-0" + randInt(100, 999),
         insurance: pick(["BlueCross #","Aetna #","UnitedHealth #","Cigna #","Kaiser #"]) + randInt(100000, 999999),
-        swimLevel: pick(swimPool),
         photoConsent: pick(["Yes","Yes","Yes","No"]),
         notes: chance(0.6) ? pick(notesPool) : "",
         counselor: "",
@@ -356,7 +419,7 @@
     const campers = generateCampers(bunks, gearPackages, store);
 
     return {
-      version: 2,
+      version: 3,
       config: CONFIG,
       bunks,
       campers,
@@ -374,8 +437,6 @@
   /* ---------- Persistence ---------- */
   let state = null;
 
-  // Fill in any fields a loaded (or imported) state might be missing so older
-  // saves don't crash the newer UI.
   function migrate(s) {
     if (!s.gearPackages) s.gearPackages = buildGearPackages();
     if (!s.counselors) s.counselors = buildCounselors();
@@ -384,6 +445,9 @@
     (s.campers || []).forEach((c) => {
       if (!Array.isArray(c.prepurchases)) c.prepurchases = [];
       if (c.counselor == null) c.counselor = "";
+      if (c.bed == null) c.bed = "";
+      if (c.campName == null) c.campName = "";
+      if (c.campFee == null) c.campFee = 0;
     });
     return s;
   }
@@ -442,6 +506,14 @@
   function bunksForSide(sideId) {
     return state.bunks.filter((b) => b.sideId === sideId);
   }
+  // Bed positions still open in a bunk (optionally ignoring one camper, e.g. when editing).
+  function availableBeds(bunkId, ignoreKidId) {
+    const taken = campersInBunk(bunkId)
+      .filter((c) => c.id !== ignoreKidId)
+      .map((c) => c.bed)
+      .filter(Boolean);
+    return BED_POSITIONS.filter((p) => !taken.includes(p));
+  }
 
   /* ---------- Attendance ---------- */
   function getSession() { return state.config.session; }
@@ -452,12 +524,10 @@
   function campersOnDate(dateStr) {
     return state.campers.filter((c) => isPresentOn(c, dateStr));
   }
-  // Which day of a camper's stay a given date is (1-based), or 0 if not present.
   function dayOfStay(c, dateStr) {
     if (!isPresentOn(c, dateStr)) return 0;
     return daysBetween(c.startDate, dateStr);
   }
-  // Group campers by stay length: exact preset buckets + "other".
   function attendanceBuckets() {
     const buckets = {};
     STAY_PRESETS.forEach((p) => (buckets[p] = []));
@@ -469,7 +539,6 @@
     });
     return buckets;
   }
-  // Every date string in the camp session, in order.
   function sessionDates() {
     return buildSessionDates(state.config);
   }
@@ -486,20 +555,30 @@
       grade: data.grade || "",
       shirtSize: data.shirtSize || "",
       address: data.address || "",
-      // Attendance window
+      // Camp / attendance
+      campName: data.campName || "",
+      campFee: Number(data.campFee) || 0,
       startDate: data.startDate || "",
       endDate: data.endDate || (data.startDate && data.days ? computeEndDate(data.startDate, data.days) : ""),
       sideId: data.sideId || "",
       bunkId: data.bunkId || "",
+      bed: data.bed || "",
       // Guardian
       guardianName: data.guardianName || "",
       guardianPhone: data.guardianPhone || "",
       guardianEmail: data.guardianEmail || "",
       guardianRelationship: data.guardianRelationship || "",
-      // Emergency contacts
-      emergencyContact: data.emergencyContact || "",
-      emergencyContact2: data.emergencyContact2 || "",
-      authorizedPickup: data.authorizedPickup || "",
+      // Emergency contacts (structured)
+      emergencyName: data.emergencyName || "",
+      emergencyRel: data.emergencyRel || "",
+      emergencyPhone: data.emergencyPhone || "",
+      emergency2Name: data.emergency2Name || "",
+      emergency2Rel: data.emergency2Rel || "",
+      emergency2Phone: data.emergency2Phone || "",
+      // Authorized pickup (structured)
+      pickupName: data.pickupName || "",
+      pickupRel: data.pickupRel || "",
+      pickupPhone: data.pickupPhone || "",
       // Medical
       allergies: data.allergies || "",
       medicalNeeds: data.medicalNeeds || "",
@@ -507,7 +586,6 @@
       dietary: data.dietary || "",
       physician: data.physician || "",
       insurance: data.insurance || "",
-      swimLevel: data.swimLevel || "",
       photoConsent: data.photoConsent || "",
       counselor: data.counselor || "",
       notes: data.notes || "",
@@ -522,7 +600,6 @@
         memo: "Opening balance", date: nowISO(),
       });
     }
-    // Gear pre-purchased at registration -> waiting on the bunk.
     if (Array.isArray(data.prepurchases)) {
       data.prepurchases.forEach((p) => {
         camper.prepurchases.push({
@@ -546,7 +623,7 @@
     }
     state.campers.push(camper);
     const bunk = getBunk(camper.bunkId);
-    logActivity(`Registered ${camper.firstName} ${camper.lastName}` + (bunk ? ` to bunk ${bunk.name}` : ""));
+    logActivity(`Registered ${camper.firstName} ${camper.lastName}` + (bunk ? ` to bunk ${bunk.name}${camper.bed ? " (" + camper.bed + ")" : ""}` : ""));
     if (camper.prepurchases.length) logActivity(`${camper.firstName} ${camper.lastName} pre-purchased ${camper.prepurchases.length} gear item(s)`);
     save();
     return camper;
@@ -567,14 +644,15 @@
     save();
   }
 
-  function assignBunk(kidId, bunkId) {
+  function assignBunk(kidId, bunkId, bed) {
     const c = getCamper(kidId);
     const bunk = getBunk(bunkId);
     if (!c || !bunk) return false;
     if (bunkOccupancy(bunkId) >= bunk.capacity && c.bunkId !== bunkId) return false;
     c.bunkId = bunkId;
     c.sideId = bunk.sideId;
-    logActivity(`Assigned ${c.firstName} ${c.lastName} to bunk ${bunk.name}`);
+    if (bed) c.bed = bed;
+    logActivity(`Assigned ${c.firstName} ${c.lastName} to bunk ${bunk.name}${c.bed ? " (" + c.bed + ")" : ""}`);
     save();
     return true;
   }
@@ -613,7 +691,6 @@
     save();
   }
 
-  // All logs across the camp, newest first, with owner info attached.
   function allLogs() {
     const out = [];
     state.campers.forEach((c) => {
@@ -627,6 +704,18 @@
       );
     });
     return out.sort((a, b) => new Date(b.date) - new Date(a.date));
+  }
+
+  // Compact flag summary for a camper (used by the admin roster).
+  function camperFlags(c) {
+    const flags = [];
+    if (c.allergies && c.allergies.trim()) flags.push({ icon: "🥜", label: "Allergy", kind: "allergy" });
+    if (c.medicalNeeds && c.medicalNeeds.trim()) flags.push({ icon: "🏥", label: "Medical", kind: "medical" });
+    if (c.medications && c.medications.trim()) flags.push({ icon: "💊", label: "Meds", kind: "meds" });
+    if (c.logs.some((l) => !l.resolved && l.type === "behavior")) flags.push({ icon: "🧭", label: "Behavior", kind: "behavior" });
+    const openInc = c.logs.filter((l) => !l.resolved && (l.type === "injury" || l.type === "incident"));
+    if (openInc.length) flags.push({ icon: "⚠️", label: openInc.length + " open", kind: "incident" });
+    return flags;
   }
 
   /* ---------- Actions: banking ---------- */
@@ -650,7 +739,6 @@
 
   /* ---------- Actions: store / purchases ---------- */
   function checkout(kidId, cart) {
-    // cart: [{ itemId, qty }]
     const c = getCamper(kidId);
     if (!c) return { ok: false, error: "No camper selected." };
     let total = 0;
@@ -667,7 +755,6 @@
     if (total > c.balance) {
       return { ok: false, error: `Insufficient funds. Balance $${c.balance.toFixed(2)}, total $${total.toFixed(2)}.` };
     }
-    // Apply
     lines.forEach(({ item, qty }) => {
       item.stock = Math.max(0, (item.stock || 0) - qty);
       c.balance -= item.price * qty;
@@ -776,7 +863,6 @@
     c.prepurchases = (c.prepurchases || []).filter((p) => p.id !== ppId);
     save();
   }
-  // Flat list of every pre-purchase with camper + bunk attached.
   function allPrepurchases() {
     const out = [];
     state.campers.forEach((c) => {
@@ -836,26 +922,60 @@
   function getMenu(dateStr) {
     return state.menus[dateStr] || { breakfast: [], lunch: [], dinner: [] };
   }
+  // Dishes are stored as { name, allergens: [tokens] }. Accepts strings too.
   function setMenu(dateStr, meal, dishes) {
     if (!state.menus[dateStr]) state.menus[dateStr] = { breakfast: [], lunch: [], dinner: [] };
-    state.menus[dateStr][meal] = dishes.filter((d) => d && d.trim());
+    state.menus[dateStr][meal] = dishes
+      .map((d) => typeof d === "string"
+        ? { name: d, allergens: allergensFor(d) }
+        : { name: d.name, allergens: Array.isArray(d.allergens) ? d.allergens.slice() : [] })
+      .filter((d) => d.name && d.name.trim());
     save();
   }
-  // Canonical allergens implied by a free-text allergy/dietary string.
+  function dishName(d) { return typeof d === "string" ? d : (d && d.name) || ""; }
+  // Canonical common allergens whose synonyms appear in free text.
   function allergensFor(text) {
     const t = (text || "").toLowerCase();
     if (!t.trim()) return [];
     return Object.keys(ALLERGEN_MAP).filter((canon) =>
       [canon].concat(ALLERGEN_MAP[canon]).some((syn) => t.includes(syn.trim())));
   }
+  function splitAllergyTokens(text) {
+    return String(text || "").split(/[,;/]+/).map((s) => s.trim().toLowerCase()).filter(Boolean);
+  }
+  // All allergens for a camper: common canonical + their own custom (non-common) ones.
   function camperAllergens(c) {
-    return allergensFor((c.allergies || "") + " " + (c.dietary || ""));
+    const out = allergensFor((c.allergies || "") + " " + (c.dietary || ""));
+    splitAllergyTokens(c.allergies).forEach((tok) => {
+      if (!out.includes(tok) && allergensFor(tok).length === 0) out.push(tok);
+    });
+    return out;
   }
-  function dishAllergens(dish) {
-    return allergensFor(dish);
+  // Allergens a dish contains: chef-tagged tokens + anything obvious in the name.
+  function dishAllergens(d) {
+    if (d && typeof d === "object") {
+      const tagged = Array.isArray(d.allergens) ? d.allergens.slice() : [];
+      allergensFor(d.name).forEach((a) => { if (!tagged.includes(a)) tagged.push(a); });
+      return tagged;
+    }
+    return allergensFor(d);
   }
-  // For a given date, find every clash between the day's menu and the
-  // allergies of campers present that day.
+  // Distinct custom (non-common) allergens any camper currently has on file.
+  function customAllergens() {
+    const set = {};
+    state.campers.forEach((c) => splitAllergyTokens(c.allergies).forEach((tok) => {
+      if (allergensFor(tok).length === 0) set[tok] = true;
+    }));
+    return Object.keys(set).sort();
+  }
+  // Options for the chef's allergen dropdown: common allergens + camper customs.
+  function allergenOptions() {
+    const titled = (s) => s.replace(/\b\w/g, (m) => m.toUpperCase());
+    return {
+      common: Object.keys(ALLERGEN_MAP).map((k) => ({ value: k, label: titled(k) })),
+      custom: customAllergens().map((k) => ({ value: k, label: titled(k) })),
+    };
+  }
   function menuAllergyAlerts(dateStr) {
     const menu = getMenu(dateStr);
     const present = campersOnDate(dateStr);
@@ -869,7 +989,7 @@
           if (hits.length) {
             alerts.push({
               meal: m.key, mealLabel: m.label, mealIcon: m.icon,
-              dish, camperId: c.id, camper: `${c.firstName} ${c.lastName}`,
+              dish: dishName(dish), camperId: c.id, camper: `${c.firstName} ${c.lastName}`,
               bunkId: c.bunkId, allergens: hits,
             });
           }
@@ -893,7 +1013,6 @@
     if (!c) return;
     const oldName = c.name;
     Object.assign(c, { name: data.name ?? c.name, role: data.role ?? c.role, phone: data.phone ?? c.phone });
-    // Keep existing bunk/camper assignments in sync if the name changed.
     if (data.name && data.name !== oldName) {
       state.bunks.forEach((b) => { if (b.counselor === oldName) b.counselor = data.name; });
       state.campers.forEach((k) => { if (k.counselor === oldName) k.counselor = data.name; });
@@ -909,7 +1028,6 @@
     state.counselors = state.counselors.filter((x) => x.id !== id);
     save();
   }
-  // Assign one counselor to many bunks at once (individual, a group, or a whole side).
   function assignCounselorToBunks(name, bunkIds) {
     bunkIds.forEach((id) => { const b = getBunk(id); if (b) b.counselor = name; });
     logActivity(`Assigned ${name || "—"} to ${bunkIds.length} bunk(s)`);
@@ -921,7 +1039,6 @@
     c.counselor = name || "";
     save();
   }
-  // How many bunks / campers each counselor currently covers.
   function counselorLoad(name) {
     const bunks = state.bunks.filter((b) => b.counselor === name);
     const bunkCampers = bunks.reduce((s, b) => s + bunkOccupancy(b.id), 0);
@@ -940,7 +1057,7 @@
     const totalCampers = state.campers.length;
     const totalCapacity = state.bunks.reduce((s, b) => s + b.capacity, 0);
     const openIncidents = allLogs().filter(
-      (l) => !l.resolved && (l.type === "incident" || l.type === "injury")
+      (l) => !l.resolved && (l.type === "incident" || l.type === "injury" || l.type === "behavior")
     ).length;
     const medicalAlerts = state.campers.filter(
       (c) => (c.medicalNeeds && c.medicalNeeds.trim()) || (c.allergies && c.allergies.trim())
@@ -973,23 +1090,28 @@
   /* ---------- Public API ---------- */
   global.CampData = {
     LOG_TYPES,
+    INCIDENT_TYPES,
     STORE_CATEGORIES,
     STAY_PRESETS,
     MEALS,
     ALLERGEN_MAP,
+    BED_POSITIONS,
+    GRADES,
+    SHIRT_SIZES,
+    CAMPS_2026,
     load, save, getState,
     getSide, getBunk, getCamper,
-    campersInBunk, bunkOccupancy, bunksForSide,
+    campersInBunk, bunkOccupancy, bunksForSide, availableBeds,
     getSession, camperDuration, isPresentOn, campersOnDate, dayOfStay,
     attendanceBuckets, sessionDates, daysBetween, computeEndDate, ymd,
     addCamper, updateCamper, deleteCamper, assignBunk,
-    addLog, toggleLogResolved, allLogs,
+    addLog, toggleLogResolved, allLogs, camperFlags,
     addFunds, checkout,
     addStoreItem, updateStoreItem, deleteStoreItem,
     getGearPackage, addGearPackage, updateGearPackage, deleteGearPackage,
     addPrepurchase, toggleFulfilled, removePrepurchase, allPrepurchases,
     getClinician, cliniciansOnDate, addClinician, updateClinician, deleteClinician, toggleClinicianDay,
-    getMenu, setMenu, menuAllergyAlerts, camperAllergens, dishAllergens,
+    getMenu, setMenu, menuAllergyAlerts, camperAllergens, dishAllergens, dishName, allergenOptions,
     getCounselor, addCounselor, updateCounselor, deleteCounselor,
     assignCounselorToBunks, setCamperCounselor, counselorLoad,
     setBunkCounselor,
