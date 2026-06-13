@@ -2363,6 +2363,7 @@
   };
 
   global.App = App;
+  global.render = render;
 
   /* ============================================================
      DATA MANAGEMENT (export / import / reset)
