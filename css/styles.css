@@ -11,8 +11,8 @@
   --brand-dark: #121316;    /* black sidebar (Young Guns) */
   --accent: #1f232b;        /* charcoal — primary buttons */
   --accent-dark: #101216;
-  --lime: #c8102e;          /* Young Guns red — highlight/accent */
-  --lime-ink: #ffffff;      /* text on red */
+  --lime: #f4a51b;          /* Young Guns sunset gold — highlight/accent */
+  --lime-ink: #1c1304;      /* text on gold */
   --pos: #3f8f3a;
   --west: #2563eb;
   --east: #16a34a;
@@ -53,7 +53,7 @@ body {
   padding: 20px 18px;
   border-bottom: 1px solid rgba(255,255,255,.08);
 }
-.brand-logo { width: 40px; height: 40px; filter: brightness(0) invert(1); opacity: .92; }
+.brand-logo { width: 46px; height: 46px; border-radius: 8px; object-fit: cover; }
 .brand-text { display: flex; flex-direction: column; line-height: 1.1; }
 .brand-text strong { color: #fff; font-size: 18px; letter-spacing: .5px; }
 .brand-text span { font-size: 12px; color: #94a3b8; }

@@ -65,5 +65,5 @@ index.html      app shell + sidebar nav
 css/styles.css  all styling
 js/data.js      data model, persistence, business logic
 js/app.js       hash-router, views, modals
-CMPWC.png       CMP logo
+young-guns-logo.jpeg   Young Guns Wrestling Camp logo
 ```
