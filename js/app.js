@@ -117,6 +117,9 @@
     const hash = global.location.hash.slice(1) || "dashboard";
     const [name, arg] = hash.split("/");
     const route = routes[name] || routes.dashboard;
+    // The parent-facing enrollment route takes over the whole screen.
+    document.body.classList.toggle("kiosk", name === "enroll");
+    if (name !== "enroll") App._enrollMode = false;
     // highlight nav
     document.querySelectorAll(".nav-item").forEach((a) =>
       a.classList.toggle("active", a.dataset.route === name)
@@ -281,7 +284,8 @@
           </div>
           <div class="field" style="max-width:320px;margin-top:8px;">
             <label>Counselor</label>
-            <input id="counselorInput" value="${esc(b.counselor)}" placeholder="Assign counselor…" />
+            <input id="counselorInput" list="counselorNames" value="${esc(b.counselor)}" placeholder="Assign counselor…" />
+            <datalist id="counselorNames">${D.getState().counselors.map((x) => `<option value="${esc(x.name)}"></option>`).join("")}</datalist>
           </div>
 
           <h3 class="section-title">Campers in this bunk</h3>
@@ -531,6 +535,7 @@
             <dt>Gender</dt><dd>${esc(c.gender) || "—"}</dd>
             <dt>Shirt size</dt><dd>${esc(c.shirtSize) || "—"}</dd>
             <dt>Address</dt><dd>${esc(c.address) || "—"}</dd>
+            <dt>Counselor</dt><dd>${c.counselor ? esc(c.counselor) : (bunk && bunk.counselor ? `${esc(bunk.counselor)} <span class="muted">(via bunk)</span>` : "—")}</dd>
             <dt>Guardian</dt><dd>${esc(c.guardianName) || "—"}${c.guardianRelationship ? ` (${esc(c.guardianRelationship)})` : ""}</dd>
             <dt>Guardian phone</dt><dd>${esc(c.guardianPhone) || "—"}</dd>
             <dt>Guardian email</dt><dd>${esc(c.guardianEmail) || "—"}</dd>
@@ -572,6 +577,14 @@
             </div>`).join("")}</div>`
             : `<p class="muted">No transactions yet.</p>`}
         </div>
+      </div>
+
+      <div class="card" style="margin-top:18px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <h3 style="margin:0;">🎒 Pre-Purchased Gear <span class="muted">(waiting on the bunk)</span></h3>
+          <button class="btn btn-sm" onclick="App.openPrepurchase('${c.id}')">+ Add Gear</button>
+        </div>
+        ${gearListHTML(c)}
       </div>
 
       <div class="card" style="margin-top:18px;">
@@ -984,6 +997,679 @@
       </div>`;
   };
 
+  /* ---------- Shared helpers for the new modules ---------- */
+  // Pre-purchased gear list shown on a camper profile.
+  function gearListHTML(c) {
+    const pp = c.prepurchases || [];
+    if (!pp.length) return `<p class="empty">No gear pre-purchased. Use “Add Gear”, or sell a package during enrollment.</p>`;
+    return `<ul class="log-list" style="margin-top:12px;">${pp.map((p) => `
+      <li class="log-item ${p.fulfilled ? "resolved" : ""}">
+        <span class="log-icon">${p.kind === "package" ? "🎁" : "🎽"}</span>
+        <div class="log-body">
+          <div class="log-text">${esc(p.name)}${p.qty > 1 ? ` ×${p.qty}` : ""}</div>
+          <div class="log-meta">
+            <span class="badge">${p.kind === "package" ? "Package" : "Item"}</span>
+            <span>${money(p.price * p.qty)}</span>
+            ${p.fulfilled ? `<span class="badge resolved">Delivered to bunk</span>` : `<span class="badge high">Awaiting delivery</span>`}
+          </div>
+        </div>
+        <button class="btn btn-sm btn-secondary" onclick="App.toggleGear('${c.id}','${p.id}')">${p.fulfilled ? "Mark waiting" : "Mark delivered"}</button>
+      </li>`).join("")}</ul>`;
+  }
+
+  // Short, chip-friendly clinician name ("Coach Dan “Tank” Rivera" -> "Tank").
+  function shortName(n) {
+    const m = n.match(/[“"]([^”"]+)[”"]/);
+    if (m) return m[1];
+    const parts = n.replace(/^(Coach|Dr\.?)\s+/i, "").split(" ");
+    return parts[parts.length - 1];
+  }
+  function clinInitials(cl) {
+    const p = cl.name.replace(/^(Coach|Dr\.?)\s+/i, "").replace(/[“”"]/g, "").split(" ");
+    return ((p[0] || "?")[0] + ((p[1] || "")[0] || "")).toUpperCase();
+  }
+  function clinAvatar(cl, size) {
+    const s = size || 52;
+    if (cl.photo) return `<div class="avatar" style="width:${s}px;height:${s}px;background-image:url('${cl.photo}');background-size:cover;background-position:center;"></div>`;
+    return `<div class="avatar" style="width:${s}px;height:${s}px;font-size:${Math.round(s / 2.6)}px;background:var(--brand);">${clinInitials(cl)}</div>`;
+  }
+  function packetLogo() {
+    const img = document.querySelector(".brand-logo");
+    return img ? img.src : "";
+  }
+
+  function initialsFromName(n) {
+    const p = String(n || "?").replace(/^(Coach|Dr\.?)\s+/i, "").split(" ");
+    return ((p[0] || "?")[0] + ((p[1] || "")[0] || "")).toUpperCase();
+  }
+
+  /* ============================================================
+     COUNSELORS — roster + assign to bunks (individual / group / side)
+     ============================================================ */
+  let counselorPick = "";    // counselor name selected for assignment
+  let bunkSelection = {};     // bunkId -> true (multi-select for bulk assign)
+
+  routes.counselors = function () {
+    titleEl().textContent = "Counselors";
+    actionsEl().innerHTML = `<button class="btn btn-accent" onclick="App.openCounselor()">+ Add Counselor</button>`;
+    drawCounselors();
+  };
+
+  function drawCounselors() {
+    const st = D.getState();
+    const selIds = Object.keys(bunkSelection);
+    view().innerHTML = `
+      <h3 class="section-title" style="margin-top:0;">Assign Counselors to Bunks <span class="muted">— one bunk, a group, or a whole side</span></h3>
+      <div class="card">
+        <div class="assign-bar">
+          <div class="field" style="margin:0;min-width:200px;">
+            <label>Counselor to assign</label>
+            <select id="assignCounselor">
+              <option value="">— choose counselor —</option>
+              ${st.counselors.map((c) => `<option ${c.name === counselorPick ? "selected" : ""}>${esc(c.name)}</option>`).join("")}
+              <option value="__clear__" ${counselorPick === "__clear__" ? "selected" : ""}>(Unassign / clear)</option>
+            </select>
+          </div>
+          <div class="assign-quick">
+            <span class="muted" style="font-size:13px;">Quick select:</span>
+            ${st.config.sides.map((s) => `<button class="btn btn-sm btn-secondary" onclick="App.selectSideBunks('${s.id}')">All ${esc(s.name)}</button>`).join("")}
+            <button class="btn btn-sm btn-secondary" onclick="App.selectAllBunks()">All bunks</button>
+            <button class="btn btn-sm btn-secondary" onclick="App.clearBunkSel()">Clear</button>
+          </div>
+          <div class="spacer"></div>
+          <button class="btn btn-accent" onclick="App.applyAssign()" ${selIds.length && counselorPick ? "" : "disabled"}>
+            Apply to ${selIds.length} bunk(s)
+          </button>
+        </div>
+        <div class="assign-map">
+          ${st.config.sides.map((side) => `
+            <div class="map-side">
+              <h3><span class="side-dot" style="background:${side.color}"></span> ${esc(side.name)}</h3>
+              <div class="bunk-grid">
+                ${D.bunksForSide(side.id).map((b) => {
+                  const sel = !!bunkSelection[b.id];
+                  return `<div class="bunk-cell selectable ${sel ? "selected" : ""}" onclick="App.toggleBunkSel('${b.id}')">
+                    <div class="bunk-name">${esc(b.name)}</div>
+                    <div class="occ">${D.bunkOccupancy(b.id)}/${b.capacity}</div>
+                    <div class="bunk-coach">${b.counselor ? esc(b.counselor) : "<span class='muted'>—</span>"}</div>
+                  </div>`;
+                }).join("")}
+              </div>
+            </div>`).join("")}
+        </div>
+      </div>
+
+      <h3 class="section-title">Counselor Roster <span class="muted">(${st.counselors.length})</span></h3>
+      <div class="clin-grid">
+        ${st.counselors.length ? st.counselors.map(counselorCardHTML).join("") : `<p class="empty">No counselors yet.</p>`}
+      </div>`;
+    document.getElementById("assignCounselor").addEventListener("change", (e) => { counselorPick = e.target.value; drawCounselors(); });
+  }
+
+  function counselorCardHTML(c) {
+    const load = D.counselorLoad(c.name);
+    return `<div class="card clin-card">
+      <div class="detail-head" style="margin-bottom:6px;">
+        <div class="avatar" style="background:var(--accent);">${esc(initialsFromName(c.name))}</div>
+        <div><h3 style="margin:0;">${esc(c.name)}</h3><div class="detail-meta">${esc(c.role || "")}</div></div>
+      </div>
+      ${c.phone ? `<div class="muted" style="font-size:13px;">📞 ${esc(c.phone)}</div>` : ""}
+      <div class="muted" style="font-size:13px;margin-top:8px;">🏕️ <strong>${load.bunks}</strong> bunk(s) · 🧒 <strong>${load.bunkCampers + load.directCampers}</strong> camper(s)</div>
+      <div style="display:flex;gap:8px;margin-top:10px;">
+        <button class="btn btn-sm btn-secondary" onclick="App.openCounselor('${c.id}')">✏️ Edit</button>
+        <button class="btn btn-sm btn-danger" onclick="App.deleteCounselor('${c.id}')">Remove</button>
+      </div>
+    </div>`;
+  }
+
+  /* ============================================================
+     CLINICIANS
+     ============================================================ */
+  routes.clinicians = function () {
+    titleEl().textContent = "Camp Clinicians";
+    actionsEl().innerHTML = `<button class="btn btn-accent" onclick="App.openClinician()">+ Add Clinician</button>`;
+    const st = D.getState();
+    const dates = D.sessionDates();
+    const today = D.ymd(new Date());
+
+    view().innerHTML = `
+      <h3 class="section-title" style="margin-top:0;">Daily Schedule <span class="muted">— who's coming in each day</span></h3>
+      <div class="card" style="overflow-x:auto;">
+        <div class="clin-days">
+          ${dates.map((ds) => {
+            const list = D.cliniciansOnDate(ds);
+            const d = new Date(ds + "T00:00:00");
+            return `<div class="clin-day ${ds === today ? "today" : ""}">
+              <div class="clin-day-date"><span>${d.toLocaleDateString(undefined, { weekday: "short" })}</span><strong>${d.toLocaleDateString(undefined, { month: "short", day: "numeric" })}</strong></div>
+              <div class="clin-day-list">
+                ${list.length ? list.map((cl) => `<span class="chip clin-chip" title="${esc(cl.name)} — ${esc(cl.specialty)}">${esc(shortName(cl.name))}</span>`).join("")
+                  : `<span class="muted" style="font-size:12px;">—</span>`}
+              </div>
+            </div>`;
+          }).join("")}
+        </div>
+      </div>
+
+      <h3 class="section-title">Clinician Roster <span class="muted">(${st.clinicians.length})</span></h3>
+      <div class="clin-grid">
+        ${st.clinicians.length ? st.clinicians.map(clinicianCardHTML).join("") : `<p class="empty">No clinicians yet. Add one to start scheduling.</p>`}
+      </div>`;
+  };
+
+  function clinicianCardHTML(cl) {
+    const days = (cl.schedule || []).length;
+    return `<div class="card clin-card">
+      <div class="detail-head" style="margin-bottom:6px;">
+        ${clinAvatar(cl, 52)}
+        <div><h3 style="margin:0;">${esc(cl.name)}</h3>
+          <div class="detail-meta">${esc(cl.specialty || "")}</div></div>
+      </div>
+      ${cl.accolades ? `<div class="badge" style="margin-bottom:8px;">🏅 ${esc(cl.accolades)}</div>` : ""}
+      <p class="muted" style="font-size:13px;margin:6px 0 12px;">${esc(cl.bio || "")}</p>
+      <div class="muted" style="font-size:13px;">📅 <strong>${days}</strong> day${days === 1 ? "" : "s"} scheduled</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">
+        <button class="btn btn-sm" onclick="App.openClinicianSchedule('${cl.id}')">📅 Schedule</button>
+        <button class="btn btn-sm btn-secondary" onclick="App.openClinician('${cl.id}')">✏️ Edit</button>
+        <button class="btn btn-sm btn-danger" onclick="App.deleteClinician('${cl.id}')">Remove</button>
+      </div>
+    </div>`;
+  }
+
+  /* ============================================================
+     MEALS & MENU
+     ============================================================ */
+  let menuDate = null;
+  routes.menu = function () {
+    titleEl().textContent = "Meals & Menu";
+    const dates = D.sessionDates();
+    const today = D.ymd(new Date());
+    if (!menuDate || !dates.includes(menuDate)) menuDate = dates.includes(today) ? today : dates[0];
+    actionsEl().innerHTML = "";
+    drawMenu();
+  };
+
+  function drawMenu() {
+    const dates = D.sessionDates();
+    const menu = D.getMenu(menuDate);
+    const present = D.campersOnDate(menuDate).length;
+    const alerts = D.menuAllergyAlerts(menuDate);
+    view().innerHTML = `
+      <div class="toolbar">
+        <label class="muted">Menu for</label>
+        <select id="menuDateSel">${dates.map((ds) => `<option value="${ds}" ${ds === menuDate ? "selected" : ""}>${new Date(ds + "T00:00:00").toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}</option>`).join("")}</select>
+        <span class="badge">${present} campers at camp</span>
+        <div class="spacer"></div>
+      </div>
+      <div class="menu-layout">
+        <div class="menu-meals">
+          ${D.MEALS.map((m) => mealCardHTML(m, menu[m.key] || [])).join("")}
+        </div>
+        <div class="card menu-alerts ${alerts.length ? "has-alerts" : ""}">
+          <h3>${alerts.length ? "⚠️ Allergy Alerts" : "✅ Allergy Cross-Check"}</h3>
+          ${alerts.length
+            ? `<p class="muted" style="font-size:13px;">${alerts.length} potential conflict${alerts.length === 1 ? "" : "s"} between today's menu and campers present. Flag with the kitchen and these athletes.</p>
+               <ul class="log-list">${alerts.map(alertItemHTML).join("")}</ul>`
+            : `<p class="muted">No allergy conflicts detected between this day's menu and the campers present. 🎉</p>`}
+        </div>
+      </div>`;
+    document.getElementById("menuDateSel").addEventListener("change", (e) => { menuDate = e.target.value; drawMenu(); });
+    D.MEALS.forEach((m) => {
+      const inp = document.getElementById("add_" + m.key);
+      if (inp) inp.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); App.addDish(m.key); } });
+    });
+  }
+
+  function mealCardHTML(m, dishes) {
+    const present = D.campersOnDate(menuDate);
+    return `<div class="card meal-card">
+      <h3>${m.icon} ${m.label}</h3>
+      <div class="meal-dishes">
+        ${dishes.length ? dishes.map((dish, i) => {
+          const da = D.dishAllergens(dish);
+          const conflict = da.length && present.some((c) => D.camperAllergens(c).some((a) => da.includes(a)));
+          return `<span class="chip dish ${conflict ? "dish-flag" : ""}" title="${da.length ? "Contains: " + da.join(", ") : ""}">${esc(dish)}${conflict ? " ⚠️" : ""}<button onclick="App.removeDish('${m.key}',${i})" title="Remove">×</button></span>`;
+        }).join("") : `<span class="muted" style="font-size:13px;">No dishes yet.</span>`}
+      </div>
+      <div style="display:flex;gap:6px;margin-top:12px;">
+        <input id="add_${m.key}" placeholder="Add a dish…" style="flex:1;padding:8px 10px;border:1px solid var(--line);border-radius:8px;font-family:inherit;">
+        <button class="btn btn-sm" onclick="App.addDish('${m.key}')">Add</button>
+      </div>
+    </div>`;
+  }
+
+  function alertItemHTML(a) {
+    return `<li class="log-item">
+      <span class="log-icon">🥜</span>
+      <div class="log-body">
+        <div class="log-text"><strong>${esc(a.camper)}</strong> — ${esc(a.allergens.join(", "))}</div>
+        <div class="log-meta"><span class="badge high">${a.mealIcon} ${esc(a.mealLabel)}</span><span>${esc(a.dish)}</span></div>
+      </div>
+      <button class="btn btn-sm btn-secondary" onclick="navigate('camper/${a.camperId}')">Profile →</button>
+    </li>`;
+  }
+
+  /* ============================================================
+     PRO SHOP & GEAR FULFILLMENT
+     ============================================================ */
+  routes.gear = function () {
+    titleEl().textContent = "Pro Shop & Gear";
+    actionsEl().innerHTML = `<button class="btn btn-accent" onclick="App.openPackage()">+ Add Package</button>`;
+    const st = D.getState();
+    const pps = D.allPrepurchases();
+    const pending = pps.filter((p) => !p.fulfilled);
+    const delivered = pps.filter((p) => p.fulfilled);
+
+    view().innerHTML = `
+      <div class="grid stat-grid" style="margin-bottom:18px;">
+        ${stat("Gear Orders", String(pps.length), "pre-purchased", "")}
+        ${stat("Awaiting Delivery", String(pending.length), "to place on bunks", pending.length ? "warn" : "good")}
+        ${stat("Delivered", String(delivered.length), "on the bunk", "good")}
+        ${stat("Pre-Sale Value", money(pps.reduce((s, p) => s + p.price * p.qty, 0)), "gear revenue", "")}
+      </div>
+
+      <h3 class="section-title" style="margin-top:0;">Gear Packages</h3>
+      <div class="pkg-grid">
+        ${st.gearPackages.map(packageCardHTML).join("")}
+      </div>
+
+      <h3 class="section-title">Fulfillment — gear waiting to hit the bunks</h3>
+      <div class="toolbar">
+        <select id="fulFilter">
+          <option value="pending">Awaiting delivery</option>
+          <option value="all">All orders</option>
+          <option value="done">Delivered</option>
+        </select>
+        <div class="spacer"></div>
+      </div>
+      <div class="card" style="padding:0;overflow:hidden;"><table class="table">
+        <thead><tr><th>Camper</th><th>Bunk</th><th>Gear</th><th class="num">Value</th><th>Status</th></tr></thead>
+        <tbody id="fulRows"></tbody>
+      </table></div>`;
+
+    function draw() {
+      const f = document.getElementById("fulFilter").value;
+      let list = D.allPrepurchases();
+      if (f === "pending") list = list.filter((p) => !p.fulfilled);
+      if (f === "done") list = list.filter((p) => p.fulfilled);
+      list.sort((a, b) => {
+        const ba = D.getBunk(a.bunkId), bb = D.getBunk(b.bunkId);
+        return (ba ? ba.name : "~").localeCompare(bb ? bb.name : "~", undefined, { numeric: true });
+      });
+      const rows = document.getElementById("fulRows");
+      rows.innerHTML = list.length ? list.map((p) => {
+        const bunk = D.getBunk(p.bunkId);
+        return `<tr>
+          <td onclick="navigate('camper/${p.camperId}')" style="cursor:pointer;">${esc(p.camper)}</td>
+          <td>${bunk ? `<a href="#bunk/${bunk.id}">${esc(bunk.name)}</a>` : "—"}</td>
+          <td>${p.kind === "package" ? "🎁" : "🎽"} ${esc(p.name)}${p.qty > 1 ? ` ×${p.qty}` : ""}</td>
+          <td class="num">${money(p.price * p.qty)}</td>
+          <td><button class="btn btn-sm ${p.fulfilled ? "btn-secondary" : ""}" onclick="App.toggleGearFul('${p.camperId}','${p.id}')">${p.fulfilled ? "✓ Delivered" : "Mark delivered"}</button></td>
+        </tr>`;
+      }).join("") : `<tr><td colspan="5"><p class="empty">No gear orders here.</p></td></tr>`;
+    }
+    document.getElementById("fulFilter").addEventListener("change", draw);
+    draw();
+  };
+
+  function packageCardHTML(pkg) {
+    return `<div class="card pkg-card ${pkg.popular ? "popular" : ""}">
+      ${pkg.popular ? `<span class="pkg-flag">★ Most Popular</span>` : ""}
+      <h3 style="margin-bottom:4px;">${esc(pkg.name)}</h3>
+      <div class="pkg-price">${money(pkg.price)}</div>
+      <p class="muted" style="font-size:13px;">${esc(pkg.description || "")}</p>
+      <ul class="pkg-items">${(pkg.items || []).map((i) => `<li>✓ ${esc(i)}</li>`).join("")}</ul>
+      <div style="display:flex;gap:8px;margin-top:10px;">
+        <button class="btn btn-sm btn-secondary" onclick="App.openPackage('${pkg.id}')">Edit</button>
+        <button class="btn btn-sm btn-danger" onclick="App.deletePackage('${pkg.id}')">Delete</button>
+      </div>
+    </div>`;
+  }
+
+  /* ============================================================
+     CAMP PACKETS (branded, printable / downloadable)
+     ============================================================ */
+  let packetKid = null;
+  routes.packets = function () {
+    titleEl().textContent = "Camp Packets";
+    const campers = D.getState().campers.slice().sort((a, b) => fullName(a).localeCompare(fullName(b)));
+    if ((!packetKid || !D.getCamper(packetKid)) && campers.length) packetKid = campers[0].id;
+    actionsEl().innerHTML = `
+      <button class="btn btn-secondary no-print" onclick="window.print()">🖨️ Print / Save PDF</button>
+      <button class="btn btn-accent no-print" onclick="App.downloadPacket()">⬇️ Download to Phone</button>`;
+    view().innerHTML = `
+      <div class="toolbar no-print">
+        <label class="muted">Generate packet for</label>
+        <select id="packetKid">${campers.map((c) => `<option value="${c.id}" ${c.id === packetKid ? "selected" : ""}>${esc(fullName(c))}</option>`).join("")}</select>
+        <div class="spacer"></div>
+        <span class="muted" style="font-size:13px;">Young Guns–branded · schedule, clinicians, gear &amp; more</span>
+      </div>
+      <div id="packetHost">${campers.length ? packetHTML(packetKid) : `<p class="empty">Register a camper first.</p>`}</div>`;
+    const sel = document.getElementById("packetKid");
+    if (sel) sel.addEventListener("change", (e) => { packetKid = e.target.value; document.getElementById("packetHost").innerHTML = packetHTML(packetKid); });
+  };
+
+  function packetHTML(kidId) {
+    const c = D.getCamper(kidId);
+    if (!c) return `<p class="empty">No camper selected.</p>`;
+    const bunk = D.getBunk(c.bunkId), side = D.getSide(c.sideId);
+    const logo = packetLogo();
+    const dates = D.sessionDates().filter((ds) => D.isPresentOn(c, ds));
+    const clinSet = {};
+    dates.forEach((ds) => D.cliniciansOnDate(ds).forEach((cl) => { clinSet[cl.id] = cl; }));
+    const clinicians = Object.values(clinSet);
+    const gear = c.prepurchases || [];
+    const bring = ["Wrestling shoes & headgear", "Athletic clothes for 2 sessions/day", "Water bottle (labeled)", "Toiletries & towel", "Sleeping bag & pillow", "Medications in original packaging", "A great attitude!"];
+    return `<div class="packet" id="packetSheet">
+      <div class="packet-head">
+        ${logo ? `<img src="${logo}" class="packet-logo" alt="">` : ""}
+        <div><div class="packet-camp">Young Guns Wrestling Camp</div>
+          <div class="packet-sub">Official Camper Packet · Summer 2026</div></div>
+      </div>
+
+      <div class="packet-hero">
+        <h1>${esc(fullName(c))}</h1>
+        <div class="packet-meta">
+          ${side ? `<span class="badge side-${side.id}">${esc(side.name)}</span>` : ""}
+          ${bunk ? `<span class="badge">Bunk ${esc(bunk.name)}</span>` : ""}
+          <span class="badge">${esc(c.startDate)} → ${esc(c.endDate)} · ${D.camperDuration(c)} days</span>
+          ${bunk && bunk.counselor ? `<span class="badge">Counselor: ${esc(bunk.counselor)}</span>` : ""}
+        </div>
+      </div>
+
+      <div class="packet-cols">
+        <div class="packet-section">
+          <h2>🩺 Clinicians During Your Stay</h2>
+          ${clinicians.length ? clinicians.map((cl) => `
+            <div class="packet-clin">
+              <strong>${esc(cl.name)}</strong> — <span class="muted">${esc(cl.specialty)}</span>
+              ${cl.accolades ? `<div class="packet-acc">🏅 ${esc(cl.accolades)}</div>` : ""}
+              <p>${esc(cl.bio)}</p>
+            </div>`).join("") : `<p class="muted">Clinician schedule to be announced.</p>`}
+        </div>
+
+        <div class="packet-section">
+          <h2>📅 Daily Clinician Schedule</h2>
+          <table class="packet-table"><tbody>
+            ${dates.map((ds) => {
+              const list = D.cliniciansOnDate(ds);
+              const d = new Date(ds + "T00:00:00");
+              return `<tr><td>${d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" })}</td>
+                <td>${list.length ? list.map((cl) => esc(shortName(cl.name))).join(", ") : "—"}</td></tr>`;
+            }).join("")}
+          </tbody></table>
+        </div>
+      </div>
+
+      <div class="packet-cols">
+        <div class="packet-section">
+          <h2>🎒 Your Gear (waiting on your bunk)</h2>
+          ${gear.length ? `<ul class="packet-list">${gear.map((p) => `<li>${p.kind === "package" ? "🎁" : "🎽"} ${esc(p.name)}${p.qty > 1 ? ` ×${p.qty}` : ""}</li>`).join("")}</ul>` : `<p class="muted">No gear pre-purchased — visit the Pro Shop at camp!</p>`}
+          <div class="packet-balance">Camp store balance: <strong>${money(c.balance)}</strong></div>
+        </div>
+        <div class="packet-section">
+          <h2>🎽 What to Bring</h2>
+          <ul class="packet-list">${bring.map((b) => `<li>☐ ${esc(b)}</li>`).join("")}</ul>
+        </div>
+      </div>
+
+      ${(c.allergies || c.medications || c.medicalNeeds || c.dietary) ? `<div class="packet-section packet-medical">
+        <h2>⚕️ Health Notes (for parents &amp; staff)</h2>
+        <ul class="packet-list">
+          ${c.allergies ? `<li><strong>Allergies:</strong> ${esc(c.allergies)}</li>` : ""}
+          ${c.medications ? `<li><strong>Medications:</strong> ${esc(c.medications)}</li>` : ""}
+          ${c.medicalNeeds ? `<li><strong>Medical:</strong> ${esc(c.medicalNeeds)}</li>` : ""}
+          ${c.dietary ? `<li><strong>Dietary:</strong> ${esc(c.dietary)}</li>` : ""}
+        </ul></div>` : ""}
+
+      <div class="packet-foot">Young Guns Wrestling Camp · Questions? Call the front desk · See you on the mat! 🤼</div>
+    </div>`;
+  }
+
+  // Compact styles embedded in the downloadable packet so it stands alone.
+  const PACKET_DOC_CSS = `
+    body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#17191f;margin:0;background:#f1f1ee;padding:20px;}
+    .packet{max-width:820px;margin:0 auto;background:#fff;border-radius:14px;overflow:hidden;box-shadow:0 10px 40px rgba(0,0,0,.12);}
+    .packet-head{display:flex;align-items:center;gap:14px;background:#121316;color:#fff;padding:20px 26px;}
+    .packet-logo{width:54px;height:54px;border-radius:8px;object-fit:cover;}
+    .packet-camp{font-size:20px;font-weight:800;letter-spacing:.5px;}
+    .packet-sub{font-size:13px;color:#f4a51b;}
+    .packet-hero{padding:22px 26px;border-bottom:1px solid #ececeb;}
+    .packet-hero h1{margin:0 0 10px;font-size:26px;}
+    .packet-meta{display:flex;gap:8px;flex-wrap:wrap;}
+    .badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:12px;font-weight:600;background:#f1f5f9;color:#334155;}
+    .badge.side-west{background:#dbeafe;color:#1d4ed8;}.badge.side-east{background:#dcfce7;color:#15803d;}
+    .packet-cols{display:flex;gap:20px;flex-wrap:wrap;padding:0 26px;}
+    .packet-section{flex:1;min-width:240px;padding:18px 0;}
+    .packet-section h2{font-size:15px;margin:0 0 10px;border-bottom:2px solid #f4a51b;padding-bottom:6px;display:inline-block;}
+    .packet-clin{margin-bottom:12px;font-size:13px;}.packet-clin p{margin:4px 0 0;color:#475569;font-size:13px;}
+    .packet-acc{font-size:12px;color:#8b8f98;margin-top:2px;}
+    .packet-table{width:100%;border-collapse:collapse;font-size:13px;}
+    .packet-table td{padding:5px 8px;border-bottom:1px solid #f0f0ef;}.packet-table td:first-child{color:#8b8f98;white-space:nowrap;width:42%;}
+    .packet-list{list-style:none;padding:0;margin:0;font-size:13px;line-height:1.9;}
+    .packet-balance{margin-top:10px;font-size:14px;}
+    .packet-medical{padding:18px 26px;background:#fff7ed;border-top:1px solid #ececeb;}
+    .packet-foot{background:#121316;color:#cbd5e1;text-align:center;padding:16px;font-size:13px;margin-top:10px;}
+    @media print{body{background:#fff;padding:0;}.packet{box-shadow:none;}}`;
+
+  /* ============================================================
+     PARENT-FACING ENROLLMENT (kiosk wizard)
+     ============================================================ */
+  let enrollDraft = null;
+  let enrollStep = 1;
+  routes.enroll = function () {
+    if (!enrollDraft) enrollDraft = { gearCart: [], deposit: 0 };
+    titleEl().textContent = "Enrollment";
+    actionsEl().innerHTML = "";
+    renderEnroll();
+  };
+
+  function enrollShell(inner) {
+    const logo = packetLogo();
+    const steps = ["Camper Info", "Choose Bunk", "Gear & Wallet", "Review"];
+    return `
+      <div class="enroll-wrap">
+        <div class="enroll-header">
+          ${logo ? `<img src="${logo}" class="enroll-logo" alt="">` : ""}
+          <div class="enroll-head-text"><div class="enroll-title">Young Guns Wrestling Camp</div>
+            <div class="enroll-sub">Camper Registration · Summer 2026</div></div>
+          <button class="btn btn-secondary btn-sm enroll-exit" onclick="App.exitEnroll()">Staff View ✕</button>
+        </div>
+        <div class="enroll-steps">
+          ${steps.map((s, i) => `<div class="estep ${i + 1 === enrollStep ? "active" : ""} ${i + 1 < enrollStep ? "done" : ""}"><span class="estep-n">${i + 1 < enrollStep ? "✓" : i + 1}</span>${s}</div>`).join("")}
+        </div>
+        <div class="enroll-body">${inner}</div>
+      </div>`;
+  }
+
+  function renderEnroll() {
+    App._enrollMode = (enrollStep === 2);
+    if (enrollStep === 1) renderEnrollInfo();
+    else if (enrollStep === 2) renderEnrollBunk();
+    else if (enrollStep === 3) renderEnrollGear();
+    else if (enrollStep === 4) renderEnrollReview();
+    else renderEnrollDone();
+  }
+
+  function renderEnrollInfo() {
+    const d = enrollDraft;
+    view().innerHTML = enrollShell(`
+      <p class="enroll-lead">Welcome! Let's get your wrestler signed up. Fields marked * are required.</p>
+      <form id="enrollForm" class="enroll-card">
+        ${photoFieldHTML(d.photo)}
+        <h4 class="section-title" style="margin-top:8px;">Camper</h4>
+        <div class="form-grid">
+          <div class="field"><label>First name *</label><input name="firstName" required value="${esc(d.firstName || "")}"></div>
+          <div class="field"><label>Last name *</label><input name="lastName" required value="${esc(d.lastName || "")}"></div>
+          <div class="field"><label>Age</label><input name="age" type="number" min="3" max="18" value="${esc(d.age || "")}"></div>
+          <div class="field"><label>Grade</label><input name="grade" value="${esc(d.grade || "")}"></div>
+          <div class="field"><label>Gender</label><select name="gender">${selOpts(["", "Female", "Male", "Non-binary", "Prefer not to say"], d.gender)}</select></div>
+          <div class="field"><label>T-shirt size</label><select name="shirtSize">${selOpts(["", "YXS", "YS", "YM", "YL", "AS", "AM", "AL", "AXL"], d.shirtSize)}</select></div>
+          <div class="field full"><label>Home address</label><input name="address" value="${esc(d.address || "")}"></div>
+        </div>
+
+        <h4 class="section-title">Dates at Camp</h4>
+        <div class="form-grid">${attendanceFieldsHTML(d)}</div>
+
+        <h4 class="section-title">Parent / Guardian</h4>
+        <div class="form-grid">
+          <div class="field"><label>Guardian name *</label><input name="guardianName" required value="${esc(d.guardianName || "")}"></div>
+          <div class="field"><label>Relationship</label><input name="guardianRelationship" placeholder="Mother, Father…" value="${esc(d.guardianRelationship || "")}"></div>
+          <div class="field"><label>Phone *</label><input name="guardianPhone" required value="${esc(d.guardianPhone || "")}"></div>
+          <div class="field"><label>Email</label><input name="guardianEmail" type="email" value="${esc(d.guardianEmail || "")}"></div>
+        </div>
+
+        <h4 class="section-title">Emergency &amp; Pickup</h4>
+        <div class="form-grid">
+          <div class="field full"><label>Emergency contact #1</label><input name="emergencyContact" placeholder="Name — relationship — phone" value="${esc(d.emergencyContact || "")}"></div>
+          <div class="field full"><label>Emergency contact #2</label><input name="emergencyContact2" placeholder="Name — relationship — phone" value="${esc(d.emergencyContact2 || "")}"></div>
+          <div class="field full"><label>Authorized for pickup</label><input name="authorizedPickup" value="${esc(d.authorizedPickup || "")}"></div>
+        </div>
+
+        <h4 class="section-title">Medical &amp; Health</h4>
+        <div class="form-grid">
+          <div class="field"><label>Allergies</label><input name="allergies" placeholder="e.g. Peanuts, Dairy" value="${esc(d.allergies || "")}"></div>
+          <div class="field"><label>Dietary needs</label><input name="dietary" placeholder="e.g. Vegetarian" value="${esc(d.dietary || "")}"></div>
+          <div class="field full"><label>Medical needs / conditions</label><input name="medicalNeeds" placeholder="e.g. Asthma — inhaler" value="${esc(d.medicalNeeds || "")}"></div>
+          <div class="field full"><label>Medications (name, dose, schedule)</label><input name="medications" value="${esc(d.medications || "")}"></div>
+          <div class="field"><label>Physician (name &amp; phone)</label><input name="physician" value="${esc(d.physician || "")}"></div>
+          <div class="field"><label>Insurance (provider &amp; policy #)</label><input name="insurance" value="${esc(d.insurance || "")}"></div>
+          <div class="field"><label>Swim level</label><select name="swimLevel">${selOpts(["", "Non-swimmer", "Beginner", "Intermediate", "Swimmer"], d.swimLevel)}</select></div>
+          <div class="field"><label>Photo/media consent</label><select name="photoConsent">${selOpts(["", "Yes", "No"], d.photoConsent)}</select></div>
+          <div class="field full"><label>Anything else we should know?</label><textarea name="notes">${esc(d.notes || "")}</textarea></div>
+        </div>
+
+        <div class="form-actions"><button type="submit" class="btn btn-accent btn-lg">Next: Choose a Bunk →</button></div>
+      </form>`);
+    document.getElementById("enrollForm").addEventListener("submit", (e) => {
+      e.preventDefault();
+      Object.assign(enrollDraft, Object.fromEntries(new FormData(e.target).entries()));
+      enrollStep = 2; renderEnroll();
+      window.scrollTo(0, 0);
+    });
+  }
+
+  function renderEnrollBunk() {
+    const d = enrollDraft;
+    view().innerHTML = enrollShell(`
+      <p class="enroll-lead">Pick a bunk for <strong>${esc(d.firstName || "your camper")}</strong>. West and East sides flank the wrestling gym. Click any open bunk.</p>
+      <div id="enrollMapHost">${bunkMapHTML({ selectMode: true, selectedBunk: d.bunkId })}</div>
+      <div class="form-actions" style="justify-content:space-between;">
+        <button class="btn btn-secondary" onclick="App.enrollGoto(1)">← Back</button>
+        <button class="btn btn-accent btn-lg" id="enrollBunkNext" ${d.bunkId ? "" : "disabled"} onclick="App.enrollGoto(3)">Next: Gear &amp; Wallet →</button>
+      </div>`);
+  }
+
+  function renderEnrollGear() {
+    const st = D.getState();
+    const cartTotal = enrollDraft.gearCart.reduce((s, g) => s + g.price * g.qty, 0);
+    const grand = cartTotal + Number(enrollDraft.deposit || 0);
+    view().innerHTML = enrollShell(`
+      <p class="enroll-lead">Gear up before day one — pre-purchased items are <strong>waiting on the bunk</strong> when ${esc(enrollDraft.firstName || "your camper")} arrives. Then load the camp store wallet so there's no scrambling for cash all summer.</p>
+
+      <h4 class="section-title" style="margin-top:6px;">🎁 Gear Packages <span class="muted">— best value</span></h4>
+      <div class="pkg-grid">
+        ${st.gearPackages.map((pkg) => {
+          const inCart = enrollDraft.gearCart.some((g) => g.kind === "package" && g.refId === pkg.id);
+          return `<div class="card pkg-card ${pkg.popular ? "popular" : ""} ${inCart ? "selected" : ""}">
+            ${pkg.popular ? `<span class="pkg-flag">★ Most Popular</span>` : ""}
+            <h3 style="margin-bottom:4px;">${esc(pkg.name)}</h3>
+            <div class="pkg-price">${money(pkg.price)}</div>
+            <p class="muted" style="font-size:13px;">${esc(pkg.description || "")}</p>
+            <ul class="pkg-items">${(pkg.items || []).map((i) => `<li>✓ ${esc(i)}</li>`).join("")}</ul>
+            <button class="btn btn-sm ${inCart ? "btn-secondary" : "btn-accent"}" style="width:100%;margin-top:10px;" onclick="App.enrollTogglePackage('${pkg.id}')">${inCart ? "✓ Added — remove" : "Add to order"}</button>
+          </div>`;
+        }).join("")}
+      </div>
+
+      <h4 class="section-title">🎽 Individual Gear</h4>
+      <div class="store-grid">
+        ${st.store.filter((i) => i.category === "Gear" || i.category === "Apparel").map((i) => {
+          const line = enrollDraft.gearCart.find((g) => g.kind === "item" && g.refId === i.id);
+          const qty = line ? line.qty : 0;
+          return `<div class="store-item">
+            <div class="cat">${esc(i.category)}</div>
+            <div class="name">${esc(i.name)}</div>
+            <div class="price">${money(i.price)}</div>
+            <div class="qty" style="justify-content:center;display:flex;align-items:center;gap:8px;margin:8px 0;">
+              <button class="qbtn" onclick="App.enrollItemQty('${i.id}',-1)">−</button>
+              <strong>${qty}</strong>
+              <button class="qbtn" onclick="App.enrollItemQty('${i.id}',1)">+</button>
+            </div>
+          </div>`;
+        }).join("")}
+      </div>
+
+      <h4 class="section-title">💳 Load the Camp Store Wallet</h4>
+      <div class="card">
+        <p class="muted" style="font-size:13px;margin-top:0;">Campers use this balance for snacks, drinks, ice cream and extra gear all summer. Add as much as you'd like — leftover funds are refundable.</p>
+        <div class="deposit-row">
+          ${[25, 50, 100, 150].map((amt) => `<button class="btn ${Number(enrollDraft.deposit) === amt ? "btn-accent" : "btn-secondary"}" onclick="App.enrollSetDeposit(${amt})">$${amt}</button>`).join("")}
+          <div class="field" style="margin:0;">
+            <input id="enrollDepositInput" type="number" min="0" step="5" placeholder="Custom $" value="${enrollDraft.deposit || ""}" style="width:120px;" onchange="App.enrollSetDeposit(this.value)">
+          </div>
+        </div>
+      </div>
+
+      <div class="enroll-summary">
+        <div>Gear order: <strong>${money(cartTotal)}</strong> &nbsp;·&nbsp; Wallet deposit: <strong>${money(enrollDraft.deposit || 0)}</strong></div>
+        <div class="enroll-grand">Total today: ${money(grand)}</div>
+      </div>
+      <div class="form-actions" style="justify-content:space-between;">
+        <button class="btn btn-secondary" onclick="App.enrollGoto(2)">← Back</button>
+        <button class="btn btn-accent btn-lg" onclick="App.enrollGoto(4)">Next: Review →</button>
+      </div>`);
+    const di = document.getElementById("enrollDepositInput");
+    if (di) di.addEventListener("input", (e) => { enrollDraft.deposit = Number(e.target.value) || 0; });
+  }
+
+  function renderEnrollReview() {
+    const d = enrollDraft;
+    const bunk = D.getBunk(d.bunkId);
+    const cartTotal = d.gearCart.reduce((s, g) => s + g.price * g.qty, 0);
+    const grand = cartTotal + Number(d.deposit || 0);
+    view().innerHTML = enrollShell(`
+      <p class="enroll-lead">Almost done — please review and confirm.</p>
+      <div class="enroll-card">
+        <h4 class="section-title" style="margin-top:0;">Camper</h4>
+        <dl class="kv">
+          <dt>Name</dt><dd>${esc(d.firstName || "")} ${esc(d.lastName || "")}</dd>
+          <dt>Age / Grade</dt><dd>${esc(d.age || "—")} · Grade ${esc(d.grade || "—")}</dd>
+          <dt>Dates</dt><dd>${esc(d.startDate || "—")} → ${esc(d.endDate || "—")}</dd>
+          <dt>Bunk</dt><dd>${bunk ? esc(bunk.name) : "—"}</dd>
+          <dt>Guardian</dt><dd>${esc(d.guardianName || "—")} · ${esc(d.guardianPhone || "")}</dd>
+          <dt>Allergies</dt><dd>${esc(d.allergies || "None")}</dd>
+          <dt>Medications</dt><dd>${esc(d.medications || "None")}</dd>
+        </dl>
+
+        <h4 class="section-title">Gear Order (waiting on the bunk)</h4>
+        ${d.gearCart.length ? `<ul class="packet-list">${d.gearCart.map((g) => `<li>${g.kind === "package" ? "🎁" : "🎽"} ${esc(g.name)}${g.qty > 1 ? ` ×${g.qty}` : ""} — ${money(g.price * g.qty)}</li>`).join("")}</ul>` : `<p class="muted">No gear added.</p>`}
+
+        <div class="enroll-summary" style="margin-top:14px;">
+          <div>Gear: <strong>${money(cartTotal)}</strong> &nbsp;·&nbsp; Wallet: <strong>${money(d.deposit || 0)}</strong></div>
+          <div class="enroll-grand">Total: ${money(grand)}</div>
+        </div>
+      </div>
+      <div class="form-actions" style="justify-content:space-between;">
+        <button class="btn btn-secondary" onclick="App.enrollGoto(3)">← Back</button>
+        <button class="btn btn-accent btn-lg" onclick="App.enrollFinish()">✓ Complete Registration</button>
+      </div>`);
+  }
+
+  function renderEnrollDone() {
+    const c = enrollDraft._created;
+    view().innerHTML = enrollShell(`
+      <div class="enroll-done">
+        <div class="enroll-check">🎉</div>
+        <h2>You're all set${c ? `, ${esc(c.firstName)}` : ""}!</h2>
+        <p class="muted">Registration is complete and the profile is in the system. Gear is queued to be placed on the bunk, and the camp wallet is loaded.</p>
+        <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;margin-top:18px;">
+          ${c ? `<button class="btn btn-accent" onclick="App.exitEnroll();navigate('packets')">📦 View Camp Packet</button>` : ""}
+          ${c ? `<button class="btn btn-secondary" onclick="App.exitEnroll();navigate('camper/${c.id}')">Open Profile</button>` : ""}
+          <button class="btn btn-secondary" onclick="App.enrollRestart()">Register Another Camper</button>
+        </div>
+      </div>`);
+  }
+
   /* ============================================================
      MODALS / ACTIONS
      ============================================================ */
@@ -1135,6 +1821,8 @@
             <select name="swimLevel">${selOpts(["", "Non-swimmer", "Beginner", "Intermediate", "Swimmer"], c.swimLevel)}</select></div>
           <div class="field"><label>Photo/media consent</label>
             <select name="photoConsent">${selOpts(["", "Yes", "No"], c.photoConsent)}</select></div>
+          <div class="field"><label>Counselor (individual)</label>
+            <select name="counselor">${selOpts([""].concat(D.getState().counselors.map((x) => x.name)), c.counselor)}</select></div>
           <div class="field full"><label>Notes</label><textarea name="notes">${esc(c.notes)}</textarea></div>
         </div>
         <div class="form-actions">
@@ -1243,6 +1931,253 @@
     closeModal();
     toast("Item deleted");
     drawStore();
+  };
+
+  /* ---------- Counselor actions ---------- */
+  App.toggleBunkSel = function (id) {
+    if (bunkSelection[id]) delete bunkSelection[id]; else bunkSelection[id] = true;
+    drawCounselors();
+  };
+  App.selectSideBunks = function (sideId) {
+    D.bunksForSide(sideId).forEach((b) => { bunkSelection[b.id] = true; });
+    drawCounselors();
+  };
+  App.selectAllBunks = function () {
+    D.getState().bunks.forEach((b) => { bunkSelection[b.id] = true; });
+    drawCounselors();
+  };
+  App.clearBunkSel = function () { bunkSelection = {}; drawCounselors(); };
+  App.applyAssign = function () {
+    const ids = Object.keys(bunkSelection);
+    if (!ids.length || !counselorPick) return;
+    const name = counselorPick === "__clear__" ? "" : counselorPick;
+    D.assignCounselorToBunks(name, ids);
+    bunkSelection = {};
+    toast(name ? `Assigned ${name} to ${ids.length} bunk(s)` : `Cleared ${ids.length} bunk(s)`, "success");
+    drawCounselors();
+  };
+  App.openCounselor = function (id) {
+    const c = id ? D.getCounselor(id) : null;
+    openModal(`
+      <h2>${c ? "Edit" : "Add"} Counselor</h2>
+      <form id="couForm">
+        <div class="form-grid">
+          <div class="field full"><label>Name *</label><input name="name" required value="${esc(c ? c.name : "")}"></div>
+          <div class="field"><label>Role</label><input name="role" placeholder="Counselor" value="${esc(c ? c.role : "Counselor")}"></div>
+          <div class="field"><label>Phone</label><input name="phone" value="${esc(c ? c.phone : "")}"></div>
+        </div>
+        <div class="form-actions">
+          <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+          <button type="submit" class="btn">Save</button>
+        </div>
+      </form>`);
+    document.getElementById("couForm").addEventListener("submit", (e) => {
+      e.preventDefault();
+      const data = Object.fromEntries(new FormData(e.target).entries());
+      if (c) D.updateCounselor(c.id, data); else D.addCounselor(data);
+      closeModal(); toast("Counselor saved", "success"); drawCounselors();
+    });
+  };
+  App.deleteCounselor = function (id) {
+    const c = D.getCounselor(id);
+    openModal(`<h2>Remove ${esc(c.name)}?</h2><p>This unassigns them from any bunks and campers.</p>
+      <div class="form-actions"><button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-danger" onclick="App.doDeleteCounselor('${id}')">Remove</button></div>`);
+  };
+  App.doDeleteCounselor = function (id) { D.deleteCounselor(id); closeModal(); toast("Counselor removed"); drawCounselors(); };
+
+  /* ---------- Clinician actions ---------- */
+  App.openClinician = function (id) {
+    const cl = id ? D.getClinician(id) : null;
+    openModal(`
+      <h2>${cl ? "Edit" : "Add"} Clinician</h2>
+      <form id="clinForm">
+        <div class="form-grid">
+          <div class="field full"><label>Name *</label><input name="name" required value="${esc(cl ? cl.name : "")}"></div>
+          <div class="field full"><label>Specialty</label><input name="specialty" placeholder="e.g. Takedowns & Hand Fighting" value="${esc(cl ? cl.specialty : "")}"></div>
+          <div class="field full"><label>Accolades</label><input name="accolades" placeholder="e.g. 2× NCAA All-American" value="${esc(cl ? cl.accolades : "")}"></div>
+          <div class="field full"><label>Background / Bio</label><textarea name="bio" placeholder="Coaching background, style, what they teach…">${esc(cl ? cl.bio : "")}</textarea></div>
+        </div>
+        <div class="form-actions">
+          <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+          <button type="submit" class="btn">Save</button>
+        </div>
+      </form>`);
+    document.getElementById("clinForm").addEventListener("submit", (e) => {
+      e.preventDefault();
+      const data = Object.fromEntries(new FormData(e.target).entries());
+      if (cl) D.updateClinician(cl.id, data); else D.addClinician(data);
+      closeModal(); toast("Clinician saved", "success"); render();
+    });
+  };
+
+  function scheduleModalHTML(cl) {
+    const dates = D.sessionDates();
+    return `<h2>Schedule — ${esc(cl.name)}</h2>
+      <p class="muted" style="font-size:13px;">Click the days this clinician is on-site. <strong>${(cl.schedule || []).length}</strong> day(s) selected.</p>
+      <div class="sched-grid">
+        ${dates.map((ds) => {
+          const on = (cl.schedule || []).includes(ds);
+          const d = new Date(ds + "T00:00:00");
+          return `<button type="button" class="sched-day ${on ? "on" : ""}" onclick="App.toggleClinDay('${cl.id}','${ds}')">${d.toLocaleDateString(undefined, { month: "short", day: "numeric" })}</button>`;
+        }).join("")}
+      </div>
+      <div class="form-actions"><button class="btn" onclick="closeModal();render();">Done</button></div>`;
+  }
+  App.openClinicianSchedule = function (id) {
+    const cl = D.getClinician(id);
+    if (!cl) return;
+    openModal(scheduleModalHTML(cl), true);
+  };
+  App.toggleClinDay = function (id, ds) {
+    D.toggleClinicianDay(id, ds);
+    document.getElementById("modal").innerHTML = scheduleModalHTML(D.getClinician(id));
+  };
+  App.deleteClinician = function (id) {
+    const cl = D.getClinician(id);
+    openModal(`<h2>Remove ${esc(cl.name)}?</h2><p>This removes the clinician and their schedule.</p>
+      <div class="form-actions"><button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-danger" onclick="App.doDeleteClinician('${id}')">Remove</button></div>`);
+  };
+  App.doDeleteClinician = function (id) { D.deleteClinician(id); closeModal(); toast("Clinician removed"); render(); };
+
+  /* ---------- Menu actions ---------- */
+  App.addDish = function (mealKey) {
+    const inp = document.getElementById("add_" + mealKey);
+    if (!inp || !inp.value.trim()) return;
+    const dishes = (D.getMenu(menuDate)[mealKey] || []).concat([inp.value.trim()]);
+    D.setMenu(menuDate, mealKey, dishes);
+    drawMenu();
+  };
+  App.removeDish = function (mealKey, idx) {
+    const dishes = (D.getMenu(menuDate)[mealKey] || []).slice();
+    dishes.splice(idx, 1);
+    D.setMenu(menuDate, mealKey, dishes);
+    drawMenu();
+  };
+
+  /* ---------- Gear / pro-shop actions ---------- */
+  App.openPackage = function (id) {
+    const pkg = id ? D.getGearPackage(id) : null;
+    openModal(`
+      <h2>${pkg ? "Edit" : "Add"} Gear Package</h2>
+      <form id="pkgForm">
+        <div class="form-grid">
+          <div class="field full"><label>Name *</label><input name="name" required value="${esc(pkg ? pkg.name : "")}"></div>
+          <div class="field"><label>Price ($)</label><input name="price" type="number" min="0" step="1" value="${pkg ? pkg.price : ""}"></div>
+          <div class="field"><label>Most popular?</label>
+            <select name="popular"><option value="">No</option><option value="yes" ${pkg && pkg.popular ? "selected" : ""}>Yes</option></select></div>
+          <div class="field full"><label>Description</label><input name="description" value="${esc(pkg ? pkg.description : "")}"></div>
+          <div class="field full"><label>Items (comma separated)</label><input name="items" value="${esc(pkg ? (pkg.items || []).join(", ") : "")}"></div>
+        </div>
+        <div class="form-actions">
+          <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+          <button type="submit" class="btn">Save</button>
+        </div>
+      </form>`);
+    document.getElementById("pkgForm").addEventListener("submit", (e) => {
+      e.preventDefault();
+      const data = Object.fromEntries(new FormData(e.target).entries());
+      data.popular = data.popular === "yes";
+      if (pkg) D.updateGearPackage(pkg.id, data); else D.addGearPackage(data);
+      closeModal(); toast("Package saved", "success"); routes.gear();
+    });
+  };
+  App.deletePackage = function (id) { D.deleteGearPackage(id); toast("Package deleted"); routes.gear(); };
+
+  App.openPrepurchase = function (kidId) {
+    const st = D.getState();
+    openModal(`
+      <h2>Add Gear</h2>
+      <form id="ppForm">
+        <div class="field"><label>Gear</label>
+          <select id="ppSel" name="sel">
+            <optgroup label="Packages">${st.gearPackages.map((p) => `<option value="pkg:${p.id}">${esc(p.name)} — ${money(p.price)}</option>`).join("")}</optgroup>
+            <optgroup label="Items">${st.store.map((i) => `<option value="itm:${i.id}">${esc(i.name)} — ${money(i.price)}</option>`).join("")}</optgroup>
+          </select></div>
+        <div class="field"><label>Quantity</label><input name="qty" type="number" min="1" value="1"></div>
+        <div class="form-actions">
+          <button type="button" class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+          <button type="submit" class="btn">Add</button>
+        </div>
+      </form>`);
+    document.getElementById("ppForm").addEventListener("submit", (e) => {
+      e.preventDefault();
+      const sel = document.getElementById("ppSel").value;
+      const qty = Number(new FormData(e.target).get("qty")) || 1;
+      const [k, refId] = sel.split(":");
+      let entry;
+      if (k === "pkg") { const p = D.getGearPackage(refId); entry = { kind: "package", refId, name: p.name, price: p.price, qty }; }
+      else { const i = D.getState().store.find((x) => x.id === refId); entry = { kind: "item", refId, name: i.name, price: i.price, qty }; }
+      D.addPrepurchase(kidId, entry);
+      closeModal(); toast("Gear added", "success"); render();
+    });
+  };
+  App.toggleGear = function (kidId, ppId) { D.toggleFulfilled(kidId, ppId); render(); };
+  App.toggleGearFul = function (kidId, ppId) { D.toggleFulfilled(kidId, ppId); routes.gear(); };
+
+  /* ---------- Packet actions ---------- */
+  App.downloadPacket = function () {
+    const c = D.getCamper(packetKid);
+    if (!c) { toast("Select a camper first", "error"); return; }
+    const doc = `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(fullName(c))} — Young Guns Packet</title><style>${PACKET_DOC_CSS}</style></head><body>${packetHTML(c.id)}</body></html>`;
+    const blob = new Blob([doc], { type: "text/html" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `young-guns-packet-${(c.firstName + "-" + c.lastName).toLowerCase().replace(/[^a-z0-9-]/g, "")}.html`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast("Packet downloaded — open it on your phone", "success");
+  };
+
+  /* ---------- Enrollment (kiosk) actions ---------- */
+  App.exitEnroll = function () { navigate("dashboard"); };
+  App.enrollGoto = function (step) { enrollStep = step; renderEnroll(); global.scrollTo(0, 0); };
+  App.enrollTogglePackage = function (pkgId) {
+    const i = enrollDraft.gearCart.findIndex((g) => g.kind === "package" && g.refId === pkgId);
+    if (i >= 0) enrollDraft.gearCart.splice(i, 1);
+    else { const p = D.getGearPackage(pkgId); enrollDraft.gearCart.push({ kind: "package", refId: pkgId, name: p.name, price: p.price, qty: 1 }); }
+    renderEnrollGear();
+  };
+  App.enrollItemQty = function (itemId, delta) {
+    const cart = enrollDraft.gearCart;
+    let line = cart.find((g) => g.kind === "item" && g.refId === itemId);
+    if (!line) {
+      if (delta < 0) return;
+      const i = D.getState().store.find((x) => x.id === itemId);
+      line = { kind: "item", refId: itemId, name: i.name, price: i.price, qty: 0 };
+      cart.push(line);
+    }
+    line.qty += delta;
+    if (line.qty <= 0) cart.splice(cart.indexOf(line), 1);
+    renderEnrollGear();
+  };
+  App.enrollSetDeposit = function (amt) { enrollDraft.deposit = Number(amt) || 0; renderEnrollGear(); };
+  App.enrollFinish = function () {
+    const data = Object.assign({}, enrollDraft, { balance: Number(enrollDraft.deposit) || 0, prepurchases: enrollDraft.gearCart });
+    const c = D.addCamper(data);
+    enrollDraft = { gearCart: [], deposit: 0, _created: c };
+    enrollStep = 5; renderEnroll(); global.scrollTo(0, 0);
+    toast(`${fullName(c)} registered!`, "success");
+  };
+  App.enrollRestart = function () { enrollDraft = { gearCart: [], deposit: 0 }; enrollStep = 1; renderEnroll(); global.scrollTo(0, 0); };
+
+  // Bunk-map selection inside the enrollment wizard.
+  const _selBeforeEnroll = App.selectBunk;
+  App.selectBunk = function (bunkId) {
+    if (App._enrollMode) {
+      const b = D.getBunk(bunkId);
+      enrollDraft.bunkId = bunkId;
+      enrollDraft.sideId = b.sideId;
+      const host = document.getElementById("enrollMapHost");
+      if (host) host.innerHTML = bunkMapHTML({ selectMode: true, selectedBunk: bunkId });
+      const nx = document.getElementById("enrollBunkNext");
+      if (nx) nx.disabled = false;
+      toast(`Bunk ${b.name} selected`, "success");
+      return;
+    }
+    _selBeforeEnroll(bunkId);
   };
 
   global.App = App;
