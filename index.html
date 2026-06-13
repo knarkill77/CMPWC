@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Young Guns Wrestling Camp — Dashboard</title>
+  <link rel="icon" href="young-guns-logo.jpeg" />
+  <link rel="stylesheet" href="css/styles.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="brand">
+        <img src="young-guns-logo.jpeg" alt="Young Guns Wrestling Camp" class="brand-logo" />
+        <div class="brand-text">
+          <strong>Young Guns</strong>
+          <span>Wrestling Camp</span>
+        </div>
+      </div>
+      <nav class="nav" id="nav">
+        <a data-route="dashboard" class="nav-item">📊 <span>Dashboard</span></a>
+        <a data-route="map" class="nav-item">🗺️ <span>Bunk Map</span></a>
+        <a data-route="register" class="nav-item">📝 <span>Register Camper</span></a>
+        <a data-route="campers" class="nav-item">🧒 <span>Campers</span></a>
+        <a data-route="counselors" class="nav-item">🧑‍🏫 <span>Counselors</span></a>
+        <a data-route="calendar" class="nav-item">📅 <span>Calendar</span></a>
+        <a data-route="attendance" class="nav-item">📈 <span>Attendance</span></a>
+        <a data-route="clinicians" class="nav-item">🩺 <span>Clinicians</span></a>
+        <a data-route="menu" class="nav-item">🍽️ <span>Meals &amp; Menu</span></a>
+        <a data-route="health" class="nav-item">🚑 <span>Health &amp; Safety</span></a>
+        <a data-route="store" class="nav-item">🛒 <span>Store</span></a>
+        <a data-route="gear" class="nav-item">🎒 <span>Pro Shop &amp; Gear</span></a>
+        <a data-route="bank" class="nav-item">💳 <span>Camp Bank</span></a>
+        <a data-route="packets" class="nav-item">📦 <span>Camp Packets</span></a>
+        <a data-route="enroll" class="nav-item nav-enroll">🎟️ <span>Parent Enrollment</span></a>
+      </nav>
+      <div class="sidebar-footer">
+        <button class="btn btn-ghost btn-sm" id="exportBtn">⬇️ Export</button>
+        <button class="btn btn-ghost btn-sm" id="importBtn">⬆️ Import</button>
+        <button class="btn btn-ghost btn-sm danger" id="resetBtn">♻️ Reset</button>
+        <input type="file" id="importFile" accept="application/json" hidden />
+      </div>
+    </aside>
+
+    <!-- Main -->
+    <main class="main">
+      <header class="topbar">
+        <h1 id="pageTitle">Dashboard</h1>
+        <div class="topbar-actions" id="topbarActions"></div>
+      </header>
+      <div class="content" id="view"></div>
+    </main>
+  </div>
+
+  <!-- Modal host -->
+  <div class="modal-overlay" id="modalOverlay" hidden>
+    <div class="modal" id="modal"></div>
+  </div>
+
+  <!-- Toast host -->
+  <div class="toast-host" id="toastHost"></div>
+
+  <script src="js/data.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
