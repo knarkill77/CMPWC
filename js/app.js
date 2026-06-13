@@ -207,9 +207,9 @@
     return `<div class="map-wrap">
       ${sidesHTML[0]}
       <div class="gym">
-        <div class="gym-icon">🏀</div>
-        <div>GYM</div>
-        <small>Shared activity center</small>
+        <div class="gym-icon">🤼</div>
+        <div>WRESTLING GYM</div>
+        <small>Mats &amp; training center</small>
       </div>
       ${sidesHTML[1]}
     </div>

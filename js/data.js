@@ -11,7 +11,7 @@
 
   /* ---------- Configuration ---------- */
   const CONFIG = {
-    campName: "CMP Summer Camp",
+    campName: "Young Guns Wrestling Camp",
     bunkCapacity: 3,        // each bunk sleeps/seats 3 kids
     bunksPerSide: 17,       // 17 bunks x 3 = 51 beds per side (~50 campers)
     sides: [

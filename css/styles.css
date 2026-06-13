@@ -7,12 +7,12 @@
   --ink: #17191f;
   --muted: #8b8f98;
   --line: #ececeb;
-  --brand: #23262d;
-  --brand-dark: #181a1f;    /* near-black sidebar */
-  --accent: #18324b;        /* deep slate — readable primary */
-  --accent-dark: #0f2438;
-  --lime: #d4ee57;          /* yellow-lime highlight */
-  --lime-ink: #1c2410;      /* text on lime */
+  --brand: #1a1c20;
+  --brand-dark: #121316;    /* black sidebar (Young Guns) */
+  --accent: #1f232b;        /* charcoal — primary buttons */
+  --accent-dark: #101216;
+  --lime: #c8102e;          /* Young Guns red — highlight/accent */
+  --lime-ink: #ffffff;      /* text on red */
   --pos: #3f8f3a;
   --west: #2563eb;
   --east: #16a34a;
