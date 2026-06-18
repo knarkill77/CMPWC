@@ -1,0 +1,3 @@
+## 2025-05-15 - [Accessibility & Interactivity Improvements]
+**Learning:** Interactive elements like mobile menu toggles and contact emails often lack proper ARIA attributes or semantic linking, which hinders accessibility and user convenience. Using `aria-expanded`, `aria-controls`, and `aria-hidden` for icons provides essential context to screen reader users. Wrapping emails in `mailto:` links with hover effects aligns with user expectations for quick communication.
+**Action:** Always implement full ARIA suites for toggle components and ensure contact information is actionable via appropriate URI schemes (`mailto:`, `tel:`) with consistent hover/focus states.
