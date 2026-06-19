@@ -1,0 +1,3 @@
+## 2025-06-19 - Accessibility and UX Fundamentals for One-Page Sites
+**Learning:** For landing pages with fixed navigations and anchor links, adding `scroll-behavior: smooth` is a critical micro-UX win that prevents "jumpy" navigation. Additionally, providing a "Skip to content" link and proper ARIA states for mobile menus ensures the site remains usable for keyboard and screen reader users, even in a "micro" scope.
+**Action:** Always check for `scroll-behavior: smooth` and "Skip to content" links when working on simple landing pages as these provide high accessibility value with minimal code changes.
